@@ -3,8 +3,11 @@
 
     python3 tests/test_m2.py                    exit 0 = all pass (Parquet round-trip reported as NOT RUN
                                                 if pyarrow is absent)
-    python3 tests/test_m2.py --require-parquet  also fails if the Parquet round-trip could not run
+    python3 tests/test_m2.py --require-parquet  also fails if the Parquet codec could not run
                                                 (use this on the machine that holds the warehouse)
+
+Every test runs once per available codec (r5.5, audit B4): JSONL always, Parquet whenever pyarrow is installed.
+r5.4 exercised Parquet in one test only, which is how a store invariant held on JSONL and not on Parquet.
 """
 import datetime as dt
 import decimal
@@ -29,6 +32,7 @@ import threading  # noqa: E402
 D1, D2, D3 = dt.date(2026, 9, 16), dt.date(2026, 9, 17), dt.date(2026, 9, 18)
 A, B, C = (s[2] for s in F.SEC)
 TESTS, NOT_RUN = [], []
+CODEC = "jsonl"          # set per pass by the runner below
 
 
 def test(fn):
@@ -37,9 +41,9 @@ def test(fn):
 
 
 class Env:
-    def __init__(self, codec="jsonl"):
+    def __init__(self, codec=None):
         self.dir = tempfile.mkdtemp()
-        self.wh = store.Warehouse(os.path.join(self.dir, "wh"), codec)
+        self.wh = store.Warehouse(os.path.join(self.dir, "wh"), codec or CODEC)
 
     def f(self, name):
         return os.path.join(self.dir, name)
@@ -59,8 +63,9 @@ def raises(exc, fn, *a, **k):
     raise AssertionError(f"expected {exc.__name__}")
 
 
-def recv(day, hhmm="23:40"):
-    return at_ist(day, hhmm)
+def recv(day, hhmm="08:00"):
+    """A backfilled file is received after its trade date (r5.5: same-day backfill is refused as a live file)."""
+    return at_ist(day + dt.timedelta(days=1), hhmm)
 
 
 def load_days(e, days, fmt=F.legacy, deliver=True):
@@ -608,6 +613,107 @@ def history_known_as_of_and_panel_differ_exactly_on_later_corrections():
         assert {x["resolved_at_cutoff"] for x in panel if x["trade_date"] == D2} == {run_cutoffs(D2)["exchange_eod"]}
 
 
+# ------------------------------------------------------------------ r5.5 additions (audit B3, B4, C5, C6)
+@test
+def panel_keeps_a_late_first_publication_and_masks_it_per_decision():
+    """B3a: D2's file is first published at 23:30, after D2's 23:00 cutoff. r5.4's panel dropped D2 for ever;
+    the decision on D2 must not see it, and every later decision must."""
+    with Env() as e:
+        for d, hhmm in ((D1, "22:40"), (D2, "23:30"), (D3, "22:40")):
+            ingest.ingest_bhavcopy(e.wh, F.legacy(e.f(f"b{d}.csv"), d), at_ist(d, hhmm), mode="live",
+                                   now=at_ist(d, hhmm))
+        panel = resolve.point_in_time_panel(e.wh, D1, D3)
+        assert {x["trade_date"] for x in panel} == {D1, D2, D3}
+        dates = lambda E: {x["trade_date"] for x in resolve.panel_as_of(panel, E)}  # noqa: E731
+        assert dates(D2) == {D1}
+        assert dates(D3) == {D1, D2, D3} == {x["trade_date"] for x in resolve.history_known_as_of(e.wh, D3)}
+
+
+@test
+def panel_masks_delivery_that_arrived_after_the_decision():
+    with Env() as e:
+        ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("b1.csv"), D1), at_ist(D1, "22:00"), mode="live", now=at_ist(D1, "22:01"))
+        ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("b2.csv"), D2), at_ist(D2, "22:00"), mode="live", now=at_ist(D2, "22:01"))
+        ingest.ingest_delivery(e.wh, F.mto(e.f("m1.DAT"), D1), at_ist(D2, "09:00"), mode="live", now=at_ist(D2, "09:01"))
+        panel = resolve.point_in_time_panel(e.wh, D1, D2)
+        at = lambda E: [x for x in resolve.panel_as_of(panel, E) if x["isin"] == A and x["trade_date"] == D1][0]  # noqa
+        assert at(D1)["delivery_state"] == "missing" and at(D1)["delivery_missing_reason"] == "not_yet_available"
+        assert at(D2)["delivery_state"] == "known"
+
+
+@test
+def backfill_inference_refused_for_a_same_day_file_and_after_live_capture_start():
+    """B3b: a file received on its own trade date is a live file; r5.4 back-dated it to 22:30."""
+    with Env() as e:
+        _unchanged(e, lambda: raises(ingest.QualityError, ingest.ingest_bhavcopy, e.wh, F.legacy(e.f("a.csv"), D1),
+                                     at_ist(D1, "23:45"), mode="backfill"))
+        p = yaml.safe_load(open(os.path.join(KIT, "policies", "source_policy.yaml")))
+        p["backfill"]["live_capture_start"] = D2.isoformat()
+        path = e.f("sp.yaml")
+        yaml.safe_dump(p, open(path, "w"))
+        pol = source_policy.load(path)
+        ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("b1.csv"), D1), recv(D1), policy=pol)       # before: allowed
+        _unchanged(e, lambda: raises(ingest.QualityError, ingest.ingest_bhavcopy, e.wh,
+                                     F.legacy(e.f("b2.csv"), D2), at_ist(D3, "12:00"), policy=pol))
+
+
+@test
+def one_bad_row_is_quarantined_not_the_whole_day():
+    """C5: 1 defective row in 20 (5%) is quarantined and the other 19 are written; beyond the limit, nothing is."""
+    many = [dict(r, isin=f"INE{n:03d}X01010", sym=f"S{n}") for n in range(20) for r in F.bars(D1)[:1]]
+    with Env() as e:
+        bad = [dict(r) for r in many]
+        bad[3].update(o="0.00", h="0.00", l="0.00", c="0.00")
+        res = ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("a.csv"), D1, bad), recv(D1))
+        assert [q["reason"] for q in res["quarantined"]] == ["ohlc_invalid"]
+        got = {x["isin"] for x in resolve.history_known_as_of(e.wh, D1)}
+        assert len(got) == 19 and bad[3]["isin"] not in got
+        assert [q["isin"] for q in e.wh.read("row_quarantine")] == [bad[3]["isin"]]
+        worse = [dict(r) for r in many]
+        for i in (1, 2):
+            worse[i]["isin"] = "BAD"
+        _unchanged(e, lambda: raises(ingest.QualityError, ingest.ingest_bhavcopy, e.wh,
+                                     F.legacy(e.f("b.csv"), D2, worse), recv(D2)))
+
+
+@test
+def quarantined_delivery_is_not_reported_as_absent():
+    many = [dict(r, isin=f"INE{n:03d}X01010", sym=f"S{n}") for n in range(20) for r in F.bars(D1)[:1]]
+    with Env() as e:
+        ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("b.csv"), D1, many), recv(D1))
+        res = ingest.ingest_delivery(e.wh, F.mto(e.f("m.DAT"), D1, rows=many, deliv={many[0]["isin"]: 10 ** 9}),
+                                     recv(D1))
+        assert [q["reason"] for q in res["quarantined"]] == ["invalid_quantity"]
+        got = {x["isin"]: x for x in resolve.history_known_as_of(e.wh, D1)}
+        assert got[many[0]["isin"]]["delivery_missing_reason"] == "quarantined"
+        assert got[many[1]["isin"]]["delivery_state"] == "known"
+
+
+@test
+def store_refuses_unknown_columns_floats_for_decimals_and_bools_for_ints():
+    with Env() as e:
+        base = {"file_sha256": "x", "source_id": "s", "trade_date": D1, "received_at": at_ist(D1, "22:00"),
+                "rows_new": 1, "rows_changed": 0, "rows_unchanged": 0, "mode": "backfill"}
+        raises(store.StoreError, e.wh.append, "ingestion_log", "2026-09-16", [dict(base, surprise=1)])
+        raises(store.StoreError, e.wh.append, "ingestion_log", "2026-09-16", [dict(base, rows_new=True)])
+        row = {k: None for k in store.TABLES["price_observation"]}
+        row.update(isin="INE000A01011", trade_date=D1, version_no=1, close=119.5)
+        raises(store.StoreError, e.wh.append, "price_observation", "2026-09-16", [row])
+
+
+@test
+def duplicate_file_check_reads_only_its_own_date():
+    """C6: r5.4 re-read the whole ingestion log for every file."""
+    with Env() as e:
+        load_days(e, [D1, D2], deliver=False)
+        seen = []
+        real = e.wh.read
+        e.wh.read = lambda t, k=None, s=None: (seen.append((t, k)), real(t, k, s))[1]
+        assert ingest.ingest_bhavcopy(e.wh, F.legacy(e.f(f"b{D2}.csv"), D2), recv(D2))["noop"]
+        e.wh.read = real
+        assert seen == [("ingestion_log", [D2.isoformat()])], seen
+
+
 @test
 def naive_timestamps_refused_by_store():
     with Env() as e:
@@ -640,19 +746,27 @@ def parquet_codec_never_falls_back_silently():
 
 
 if __name__ == "__main__":
-    fails = 0
-    for t in TESTS:
-        try:
-            n_before = len(NOT_RUN)
-            t()
-            print(f"{'SKIP' if len(NOT_RUN) > n_before else 'ok  '}  {t.__name__}")
-        except Exception:
+    try:
+        import pyarrow  # noqa: F401
+        codecs = ["jsonl", "parquet"]
+    except ImportError:
+        codecs = ["jsonl"]
+    fails, runs = 0, 0
+    for CODEC in codecs:
+        print(f"--- codec: {CODEC}")
+        for t in TESTS:
+            runs += 1
+            try:
+                n_before = len(NOT_RUN)
+                t()
+                print(f"{'SKIP' if len(NOT_RUN) > n_before else 'ok  '}  {t.__name__}")
+            except Exception:
+                fails += 1
+                print(f"FAIL  {t.__name__} [{CODEC}]")
+                traceback.print_exc()
+    print(f"\n{runs - fails}/{runs} passed ({len(TESTS)} cases x {len(codecs)} codec(s): {', '.join(codecs)})")
+    if "parquet" not in codecs:
+        print("NOT RUN: every case on the parquet codec (pyarrow not installed)")
+        if "--require-parquet" in sys.argv:
             fails += 1
-            print(f"FAIL  {t.__name__}")
-            traceback.print_exc()
-    print(f"\n{len(TESTS) - fails}/{len(TESTS)} passed")
-    for n in NOT_RUN:
-        print(f"NOT RUN: {n}")
-    if "--require-parquet" in sys.argv and NOT_RUN:
-        fails += 1
     sys.exit(1 if fails else 0)

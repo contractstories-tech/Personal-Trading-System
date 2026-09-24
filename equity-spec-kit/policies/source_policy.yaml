@@ -1,6 +1,6 @@
 # Source policy (Document 02 s2, s3). Versioned; every snapshot records the version it was built under.
 # Availability rules that were previously prose-only live here, and eos/source_policy.py enforces them.
-source_policy_version: 1.1.0
+source_policy_version: 1.2.0
 valid_from: "2000-01-01"
 
 # Backfill availability is set PER SOURCE (1.1.0; review B9): the bhavcopy and the delivery file are
@@ -23,6 +23,16 @@ sources:
     formats: [nse_mto_delivery]
     availability: {policy_lag_minutes: 0, inferred_published_time_ist: "22:30", inferred_basis: unverified}
 
+# Backfill inference is only for history the system could not have captured live (1.2.0; audit B3b).
+# live_capture_start: the first trade date captured live by the scheduled downloader. From that date on,
+#   every file must be ingested in live mode, so a replay can never "see" a file its live run did not have.
+#   null until live capture begins.
+# min_age_days: a file received on the trade date itself (IST calendar), or fewer than this many days after
+#   it, cannot be ingested as backfill: a same-day file is a live file.
+backfill:
+  live_capture_start: null
+  min_age_days: 1
+
 disclosure_lags:
   structured_lag_minutes: 30     # XBRL, corporate-action notices
   pdf_only_lag_minutes: 240
@@ -31,3 +41,6 @@ quality:
   row_count_warn_band: 0.05        # |today / prior - 1| above this -> warning (exact arithmetic)
   row_count_kill_ratio: 0.90       # today / prior below this -> kill switch, nothing written
   delivery_volume_tolerance: 0.001 # delivery file's traded qty vs bhavcopy volume
+  # 1.2.0 (audit C5): rows failing a row-level check are quarantined; the file is rejected only if the
+  # quarantined share exceeds this. Adopted default, to be recalibrated on the batch-1 real files (S1b).
+  max_quarantine_share: 0.05

@@ -60,6 +60,10 @@ TABLES = {
     "data_conflict": {
         "table_name": "str", "isin": "str", "trade_date": "date", "kind": "str", "detail": "str",
         "file_sha256": "str", "logged_at": "ts"},
+    # r5.5 (audit C5): a defective row is quarantined, not allowed to reject the whole file
+    "row_quarantine": {
+        "table_name": "str", "trade_date": "date", "isin": "str", "symbol": "str", "series": "str",
+        "reason": "str", "detail": "str", "file_sha256": "str", "logged_at": "ts"},
 }
 
 
@@ -75,6 +79,32 @@ class SimulatedCrash(RuntimeError):
     """Test hook only."""
 
 
+# ------------------------------------------------------------------ pre-write validation (every codec)
+def validate(table, rows):
+    """One check for every codec (audit B4): r5.4 refused naive timestamps only inside the JSONL encoder, so the
+    production Parquet codec stored a naive 22:30 IST as 22:30 UTC. Unknown columns are refused rather than
+    silently dropped; floats are refused where the schema says decimal; bools are refused where it says int."""
+    cols = TABLES[table]
+    for r in rows:
+        extra = set(r) - set(cols)
+        if extra:
+            raise StoreError(f"{table}: unknown column(s) {sorted(extra)}")
+        for k, t in cols.items():
+            v = r.get(k)
+            if v is None:
+                continue
+            ok = {"str": isinstance(v, str),
+                  "int": isinstance(v, int) and not isinstance(v, bool),
+                  "bool": isinstance(v, bool),
+                  "dec": isinstance(v, (decimal.Decimal, int)) and not isinstance(v, bool),
+                  "date": isinstance(v, dt.date) and not isinstance(v, dt.datetime),
+                  "ts": isinstance(v, dt.datetime)}[t]
+            if not ok:
+                raise StoreError(f"{table}.{k}: {type(v).__name__} is not a valid {t}")
+            if t == "ts" and v.tzinfo is None:
+                raise StoreError("naive timestamp refused: all timestamps are UTC-aware")
+
+
 # ------------------------------------------------------------------ value encoding
 def _enc(v, t):
     if v is None:
@@ -84,8 +114,6 @@ def _enc(v, t):
     if t == "date":
         return v.isoformat()
     if t == "ts":
-        if v.tzinfo is None:
-            raise StoreError("naive timestamp refused: all timestamps are UTC-aware")
         return v.astimezone(dt.timezone.utc).isoformat()
     return v
 
@@ -135,7 +163,10 @@ class ParquetCodec:
         import pyarrow as pa
         import pyarrow.parquet as pq
         cols = TABLES[table]
-        tbl = pa.Table.from_pylist([{k: r.get(k) for k in cols} for r in rows], schema=self._schema(table))
+        conv = lambda v, t: v.astimezone(dt.timezone.utc) if (t == "ts" and v is not None) else \
+            (decimal.Decimal(v) if (t == "dec" and v is not None) else v)  # noqa: E731
+        tbl = pa.Table.from_pylist([{k: conv(r.get(k), t) for k, t in cols.items()} for r in rows],
+                                   schema=self._schema(table))
         buf = io.BytesIO()
         pq.write_table(tbl, buf)
         return buf.getvalue()
@@ -186,6 +217,7 @@ class Batch:
         if not rows:
             return None
         pdir = self.wh.pdir(table, key)
+        validate(table, rows)
         os.makedirs(pdir, exist_ok=True)
         data = self.wh.codec.dumps(table, rows)
         sha = hashlib.sha256(data).hexdigest()

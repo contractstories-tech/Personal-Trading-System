@@ -1,1 +1,3 @@
 PyYAML==6.0.3
+# warehouse machine only (the Parquet codec); validated by tests/test_m2.py --require-parquet
+pyarrow==25.0.1
