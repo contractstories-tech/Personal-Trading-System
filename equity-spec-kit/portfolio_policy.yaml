@@ -1,0 +1,24 @@
+# Portfolio policy - semantics fixed by schemas/portfolio_policy.schema.json.
+# Every OPEN value is yours to set deliberately. Never infer these from backtest results.
+policy_version: 0.2.0
+total_capital: OPEN
+caps:
+  per_stock_pct: OPEN
+  per_sector_pct: OPEN
+  per_promoter_group_pct: OPEN
+  per_strategy_pct: NONE          # no capital buckets unless you choose one
+  max_open_positions: OPEN
+  min_position_pct: OPEN          # a claim that cannot reach this size is not actionable
+  factor_limits: NONE             # reserved extension point
+risk:
+  max_portfolio_drawdown_pct: OPEN
+  drawdown_action: OPEN
+  cash_floor_pct: OPEN
+  trim_tolerance_pct: OPEN        # trim only when a holding exceeds its target by more than this
+allocator:
+  security_target: max_of_live_claim_targets
+  convergence: display_never_size_up
+slot_priority: [existing_holding, earliest_signal, larger_market_cap, isin]
+restricted_list: {source: manual_file, path: policies/restricted_list.yaml, sha256: OPEN}
+promoter_group_map: {source: vendor, version: OPEN}
+breach_behaviour: mark_valid_but_not_actionable

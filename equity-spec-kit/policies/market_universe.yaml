@@ -1,0 +1,11 @@
+# Market-eligible universe policy - Document 02 s10. Versioned; hashed into every run manifest.
+policy_version: 1.0.0
+top_n: 500
+entry_sessions: 5          # enters after 5 consecutive sessions inside top N
+exit_buffer: 50            # leaves after exit_sessions consecutive sessions outside top N + exit_buffer
+exit_sessions: 5
+exclude_series: [trade_for_trade]
+exclude_reason: >
+  Trade-for-trade series are placed there by the exchange, usually under surveillance,
+  with every trade compulsorily settled by delivery and no intraday netting. They are a
+  platform-level exclusion for settlement and surveillance reasons, not a strategy choice.

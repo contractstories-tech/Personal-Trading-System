@@ -1,0 +1,256 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "run_manifest.schema.json",
+ "title": "Run manifest - immutable identity of one evaluation or backtest run",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "run_id",
+  "run_type",
+  "trading_date",
+  "disclosure_cutoff_ts",
+  "market_cutoff_ts",
+  "data_snapshot_id",
+  "data_snapshot_sha256",
+  "package_digest",
+  "strategy_cards",
+  "registry_sha256",
+  "source_policy_sha256",
+  "sector_map_sha256",
+  "trading_calendar_sha256",
+  "market_universe_policy_sha256",
+  "cost_schedule_sha256",
+  "tax_schedule_sha256",
+  "corporate_action_policy",
+  "feature_build",
+  "simulator_sha256",
+  "code_commit",
+  "container_image_digest",
+  "dependency_lock_sha256",
+  "engine_settings",
+  "portfolio_policy_sha256",
+  "created_at"
+ ],
+ "properties": {
+  "run_id": {
+   "type": "string",
+   "minLength": 1
+  },
+  "run_type": {
+   "enum": [
+    "live_evaluation",
+    "backtest",
+    "shadow",
+    "replay"
+   ]
+  },
+  "trading_date": {
+   "type": "string",
+   "format": "date"
+  },
+  "disclosure_cutoff_ts": {
+   "type": "string",
+   "format": "date-time"
+  },
+  "market_cutoff_ts": {
+   "type": "string",
+   "format": "date-time"
+  },
+  "data_snapshot_id": {
+   "type": "string",
+   "minLength": 1
+  },
+  "data_snapshot_sha256": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "package_digest": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "strategy_cards": {
+   "type": "array",
+   "minItems": 1,
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "code",
+     "version",
+     "sha256",
+     "status_at_run"
+    ],
+    "properties": {
+     "code": {
+      "type": "string"
+     },
+     "version": {
+      "type": "string"
+     },
+     "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+     },
+     "status_at_run": {
+      "enum": [
+       "experimental",
+       "shadow",
+       "production",
+       "suspended",
+       "retired"
+      ]
+     }
+    }
+   }
+  },
+  "registry_sha256": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "source_policy_sha256": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "sector_map_sha256": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "trading_calendar_sha256": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "market_universe_policy_sha256": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "cost_schedule_sha256": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "tax_schedule_sha256": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "corporate_action_policy": {
+   "type": "string",
+   "pattern": "^standard_equity_ca_policy_v[0-9]+$"
+  },
+  "feature_build": {
+   "type": "object",
+   "minProperties": 1,
+   "additionalProperties": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "feature_version",
+     "implementation_sha256"
+    ],
+    "properties": {
+     "feature_version": {
+      "type": "string"
+     },
+     "implementation_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+     }
+    }
+   }
+  },
+  "simulator_sha256": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "code_commit": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{7,40}$"
+  },
+  "container_image_digest": {
+   "type": "string",
+   "pattern": "^sha256:[0-9a-f]{64}$"
+  },
+  "dependency_lock_sha256": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "engine_settings": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "threads",
+    "aggregation_order",
+    "tie_tolerance"
+   ],
+   "properties": {
+    "threads": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "aggregation_order": {
+     "const": "isin_then_date"
+    },
+    "tie_tolerance": {
+     "type": "number",
+     "exclusiveMinimum": 0,
+     "maximum": 1e-06
+    }
+   }
+  },
+  "portfolio_policy_sha256": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "random_seed": {
+   "type": "integer"
+  },
+  "created_at": {
+   "type": "string",
+   "format": "date-time"
+  },
+  "holdout_access": {
+   "enum": [
+    "none",
+    "sealed_evaluation"
+   ]
+  },
+  "holdout_ledger_entry_id": {
+   "type": "string"
+  }
+ },
+ "allOf": [
+  {
+   "if": {
+    "properties": {
+     "run_type": {
+      "const": "backtest"
+     }
+    },
+    "required": [
+     "run_type"
+    ]
+   },
+   "then": {
+    "required": [
+     "holdout_access",
+     "random_seed"
+    ]
+   }
+  },
+  {
+   "if": {
+    "properties": {
+     "holdout_access": {
+      "const": "sealed_evaluation"
+     }
+    },
+    "required": [
+     "holdout_access"
+    ]
+   },
+   "then": {
+    "required": [
+     "holdout_ledger_entry_id"
+    ]
+   }
+  }
+ ]
+}

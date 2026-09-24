@@ -1,0 +1,33 @@
+# Source policy (Document 02 s2, s3). Versioned; every snapshot records the version it was built under.
+# Availability rules that were previously prose-only live here, and eos/source_policy.py enforces them.
+source_policy_version: 1.1.0
+valid_from: "2000-01-01"
+
+# Backfill availability is set PER SOURCE (1.1.0; review B9): the bhavcopy and the delivery file are
+# separate artefacts with separate publication processes. The FIRST version of a backfilled row is
+# treated as published at inferred_published_time_ist on its trade date (availability_inferred = true);
+# a LATER version is never inferred - it is available when this system actually received it.
+# inferred_basis says whether the time is still an assumption (unverified) or has been measured from
+# live capture (measured). Every inferred time must fall strictly before the source domain's cutoff.
+sources:
+  nse_cm_bhavcopy:
+    domain: exchange_eod
+    table: price_observation
+    role: primary
+    formats: [nse_bhavcopy_legacy, nse_bhavcopy_udiff]
+    availability: {policy_lag_minutes: 0, inferred_published_time_ist: "22:30", inferred_basis: unverified}
+  nse_cm_delivery:
+    domain: exchange_eod
+    table: delivery_observation
+    role: primary
+    formats: [nse_mto_delivery]
+    availability: {policy_lag_minutes: 0, inferred_published_time_ist: "22:30", inferred_basis: unverified}
+
+disclosure_lags:
+  structured_lag_minutes: 30     # XBRL, corporate-action notices
+  pdf_only_lag_minutes: 240
+
+quality:
+  row_count_warn_band: 0.05        # |today / prior - 1| above this -> warning (exact arithmetic)
+  row_count_kill_ratio: 0.90       # today / prior below this -> kill switch, nothing written
+  delivery_volume_tolerance: 0.001 # delivery file's traded qty vs bhavcopy volume

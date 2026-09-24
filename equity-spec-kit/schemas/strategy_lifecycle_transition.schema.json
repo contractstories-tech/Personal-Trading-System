@@ -1,0 +1,404 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "strategy_lifecycle_transition.schema.json",
+ "title": "Auditable strategy status transition - the only way a status changes",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "transition_id",
+  "strategy_code",
+  "lineage",
+  "card_sha256",
+  "from_status",
+  "to_status",
+  "decided_by",
+  "decided_at",
+  "reason",
+  "evidence"
+ ],
+ "properties": {
+  "transition_id": {
+   "type": "string"
+  },
+  "strategy_code": {
+   "type": "string"
+  },
+  "lineage": {
+   "type": "string",
+   "pattern": "^[a-z][a-z0-9_]*$"
+  },
+  "card_sha256": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "from_status": {
+   "enum": [
+    "none",
+    "experimental",
+    "shadow",
+    "production",
+    "suspended",
+    "retired"
+   ]
+  },
+  "to_status": {
+   "enum": [
+    "experimental",
+    "shadow",
+    "production",
+    "suspended",
+    "retired"
+   ]
+  },
+  "decided_by": {
+   "type": "string",
+   "minLength": 1
+  },
+  "decided_at": {
+   "type": "string",
+   "format": "date-time"
+  },
+  "reason": {
+   "type": "string",
+   "minLength": 10
+  },
+  "evidence": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "backtest_run_ids": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "string"
+     }
+    },
+    "holdout_run_id": {
+     "type": "string",
+     "minLength": 1
+    },
+    "holdout_ledger_entry_id": {
+     "type": "string",
+     "minLength": 1
+    },
+    "shadow_run_ids": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "string"
+     }
+    },
+    "golden_case_report_sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "linter_report_sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "validation_report_sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "retirement_metric_breach": {
+     "type": "string",
+     "minLength": 1
+    },
+    "data_fault_id": {
+     "type": "string",
+     "minLength": 1
+    }
+   }
+  }
+ },
+ "allOf": [
+  {
+   "oneOf": [
+    {
+     "properties": {
+      "from_status": {
+       "const": "none"
+      },
+      "to_status": {
+       "const": "experimental"
+      }
+     }
+    },
+    {
+     "properties": {
+      "from_status": {
+       "const": "experimental"
+      },
+      "to_status": {
+       "const": "shadow"
+      }
+     }
+    },
+    {
+     "properties": {
+      "from_status": {
+       "const": "experimental"
+      },
+      "to_status": {
+       "const": "retired"
+      }
+     }
+    },
+    {
+     "properties": {
+      "from_status": {
+       "const": "shadow"
+      },
+      "to_status": {
+       "const": "production"
+      }
+     }
+    },
+    {
+     "properties": {
+      "from_status": {
+       "const": "shadow"
+      },
+      "to_status": {
+       "const": "experimental"
+      }
+     }
+    },
+    {
+     "properties": {
+      "from_status": {
+       "const": "shadow"
+      },
+      "to_status": {
+       "const": "retired"
+      }
+     }
+    },
+    {
+     "properties": {
+      "from_status": {
+       "const": "production"
+      },
+      "to_status": {
+       "const": "suspended"
+      }
+     }
+    },
+    {
+     "properties": {
+      "from_status": {
+       "const": "production"
+      },
+      "to_status": {
+       "const": "retired"
+      }
+     }
+    },
+    {
+     "properties": {
+      "from_status": {
+       "const": "suspended"
+      },
+      "to_status": {
+       "const": "production"
+      }
+     }
+    },
+    {
+     "properties": {
+      "from_status": {
+       "const": "suspended"
+      },
+      "to_status": {
+       "const": "retired"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "if": {
+    "properties": {
+     "from_status": {
+      "const": "none"
+     },
+     "to_status": {
+      "const": "experimental"
+     }
+    },
+    "required": [
+     "from_status",
+     "to_status"
+    ]
+   },
+   "then": {
+    "properties": {
+     "evidence": {
+      "type": "object",
+      "required": [
+       "linter_report_sha256"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "if": {
+    "properties": {
+     "from_status": {
+      "const": "experimental"
+     },
+     "to_status": {
+      "const": "shadow"
+     }
+    },
+    "required": [
+     "from_status",
+     "to_status"
+    ]
+   },
+   "then": {
+    "properties": {
+     "evidence": {
+      "type": "object",
+      "required": [
+       "backtest_run_ids",
+       "holdout_run_id",
+       "holdout_ledger_entry_id",
+       "golden_case_report_sha256",
+       "linter_report_sha256",
+       "validation_report_sha256"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "if": {
+    "properties": {
+     "from_status": {
+      "const": "shadow"
+     },
+     "to_status": {
+      "const": "production"
+     }
+    },
+    "required": [
+     "from_status",
+     "to_status"
+    ]
+   },
+   "then": {
+    "properties": {
+     "evidence": {
+      "type": "object",
+      "required": [
+       "shadow_run_ids",
+       "linter_report_sha256",
+       "validation_report_sha256"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "if": {
+    "properties": {
+     "from_status": {
+      "const": "production"
+     },
+     "to_status": {
+      "const": "suspended"
+     }
+    },
+    "required": [
+     "from_status",
+     "to_status"
+    ]
+   },
+   "then": {
+    "properties": {
+     "evidence": {
+      "oneOf": [
+       {
+        "type": "object",
+        "required": [
+         "retirement_metric_breach"
+        ]
+       },
+       {
+        "type": "object",
+        "required": [
+         "data_fault_id"
+        ]
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "if": {
+    "properties": {
+     "from_status": {
+      "const": "suspended"
+     },
+     "to_status": {
+      "const": "production"
+     }
+    },
+    "required": [
+     "from_status",
+     "to_status"
+    ]
+   },
+   "then": {
+    "properties": {
+     "evidence": {
+      "type": "object",
+      "required": [
+       "validation_report_sha256",
+       "linter_report_sha256"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "if": {
+    "properties": {
+     "from_status": {
+      "const": "production"
+     },
+     "to_status": {
+      "const": "retired"
+     }
+    },
+    "required": [
+     "from_status",
+     "to_status"
+    ]
+   },
+   "then": {
+    "properties": {
+     "evidence": {
+      "oneOf": [
+       {
+        "type": "object",
+        "required": [
+         "retirement_metric_breach"
+        ]
+       },
+       {
+        "type": "object",
+        "required": [
+         "data_fault_id"
+        ]
+       }
+      ]
+     }
+    }
+   }
+  }
+ ]
+}

@@ -1,0 +1,257 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "portfolio_policy.schema.json",
+ "title": "Portfolio policy - semantics fixed, values set by the user",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "policy_version",
+  "total_capital",
+  "caps",
+  "risk",
+  "allocator",
+  "slot_priority",
+  "restricted_list",
+  "promoter_group_map",
+  "breach_behaviour"
+ ],
+ "properties": {
+  "policy_version": {
+   "type": "string",
+   "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+  },
+  "total_capital": {
+   "oneOf": [
+    {
+     "const": "OPEN"
+    },
+    {
+     "type": "number",
+     "exclusiveMinimum": 0
+    }
+   ]
+  },
+  "caps": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "per_stock_pct",
+    "per_sector_pct",
+    "per_promoter_group_pct",
+    "per_strategy_pct",
+    "max_open_positions",
+    "min_position_pct"
+   ],
+   "properties": {
+    "per_stock_pct": {
+     "oneOf": [
+      {
+       "const": "OPEN"
+      },
+      {
+       "type": "number",
+       "exclusiveMinimum": 0,
+       "maximum": 1
+      }
+     ]
+    },
+    "per_sector_pct": {
+     "oneOf": [
+      {
+       "const": "OPEN"
+      },
+      {
+       "type": "number",
+       "exclusiveMinimum": 0,
+       "maximum": 1
+      }
+     ]
+    },
+    "per_promoter_group_pct": {
+     "oneOf": [
+      {
+       "const": "OPEN"
+      },
+      {
+       "type": "number",
+       "exclusiveMinimum": 0,
+       "maximum": 1
+      }
+     ]
+    },
+    "per_strategy_pct": {
+     "oneOf": [
+      {
+       "const": "OPEN"
+      },
+      {
+       "const": "NONE"
+      },
+      {
+       "type": "number",
+       "exclusiveMinimum": 0,
+       "maximum": 1
+      }
+     ]
+    },
+    "max_open_positions": {
+     "oneOf": [
+      {
+       "const": "OPEN"
+      },
+      {
+       "type": "integer",
+       "minimum": 1
+      }
+     ]
+    },
+    "min_position_pct": {
+     "oneOf": [
+      {
+       "const": "OPEN"
+      },
+      {
+       "type": "number",
+       "exclusiveMinimum": 0,
+       "maximum": 1
+      }
+     ]
+    },
+    "factor_limits": {
+     "const": "NONE",
+     "description": "reserved extension point for factor/correlation crowding"
+    }
+   }
+  },
+  "risk": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "max_portfolio_drawdown_pct",
+    "drawdown_action",
+    "cash_floor_pct",
+    "trim_tolerance_pct"
+   ],
+   "properties": {
+    "max_portfolio_drawdown_pct": {
+     "oneOf": [
+      {
+       "const": "OPEN"
+      },
+      {
+       "type": "number",
+       "exclusiveMinimum": 0,
+       "maximum": 1
+      }
+     ]
+    },
+    "drawdown_action": {
+     "enum": [
+      "halt_new_entries",
+      "halve_new_sizes",
+      "OPEN"
+     ]
+    },
+    "cash_floor_pct": {
+     "oneOf": [
+      {
+       "const": "OPEN"
+      },
+      {
+       "type": "number",
+       "minimum": 0,
+       "exclusiveMaximum": 1
+      }
+     ]
+    },
+    "trim_tolerance_pct": {
+     "oneOf": [
+      {
+       "const": "OPEN"
+      },
+      {
+       "type": "number",
+       "exclusiveMinimum": 0,
+       "maximum": 1
+      }
+     ]
+    }
+   }
+  },
+  "allocator": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "security_target",
+    "convergence"
+   ],
+   "properties": {
+    "security_target": {
+     "const": "max_of_live_claim_targets"
+    },
+    "convergence": {
+     "const": "display_never_size_up"
+    }
+   }
+  },
+  "slot_priority": {
+   "type": "array",
+   "const": [
+    "existing_holding",
+    "earliest_signal",
+    "larger_market_cap",
+    "isin"
+   ]
+  },
+  "restricted_list": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "source",
+    "path",
+    "sha256"
+   ],
+   "properties": {
+    "source": {
+     "const": "manual_file"
+    },
+    "path": {
+     "type": "string"
+    },
+    "sha256": {
+     "oneOf": [
+      {
+       "const": "OPEN"
+      },
+      {
+       "type": "string",
+       "pattern": "^[0-9a-f]{64}$"
+      }
+     ]
+    }
+   }
+  },
+  "promoter_group_map": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "source",
+    "version"
+   ],
+   "properties": {
+    "source": {
+     "enum": [
+      "vendor",
+      "manual_file"
+     ]
+    },
+    "version": {
+     "type": "string"
+    }
+   }
+  },
+  "breach_behaviour": {
+   "const": "mark_valid_but_not_actionable"
+  }
+ }
+}

@@ -1,0 +1,142 @@
+schema_version: 5
+code: mom_v1
+strategy_class: momentum
+version: 1.0.0-prevalidation.7
+lineage: mom
+status: experimental
+registry: {version: 2.2.0, sha256: 2d531e2a71aee5c9ed9e00c4ac9534dddb4c7d25b4703e3b2b505483087aa128}
+
+hypothesis: >
+  Cross-sectional relative strength persists over 3 to 12 month horizons
+  because information diffuses slowly and investors under-react to it.
+  Scaling by realised volatility separates persistent trend from noise, and
+  skipping the most recent month avoids short-term reversal. In Indian
+  mid-caps the effect is contaminated by illiquidity and circuit halts, so
+  liquidity gating is part of the signal rather than a risk overlay.
+
+trade_direction: long
+horizon: weeks
+data_resolution: eod
+evaluation:
+  entry_triggers: [{trigger: weekly_eod, weekday: fri}]
+  risk_trigger: {trigger: daily_eod}
+selection_method: rank_and_gate
+
+universe:
+  base: market_eligible
+  exclude_sectors: []
+  filters: ["circuit_days_60d <= 5"]
+
+features:
+  - ret_12m_skip_1m
+  - ret_6m_skip_1m
+  - realised_vol_60d
+  - vol_adj_mom_12m
+  - vol_adj_mom_6m
+  - rel_strength_6m_vs_nifty200_tri
+  - adv_20d_cr
+  - delivery_pct_20d_avg
+  - is_fno_eligible
+  - price_vs_dma50
+  - price_vs_dma200
+  - atr_pct_20
+  - circuit_days_60d
+  - surveillance_stage
+  - market_breadth
+
+unknown_overrides:
+  is_fno_eligible: fail
+  surveillance_stage: fail
+  market_breadth: penalise
+
+params:
+  band_fno:
+    value: CALIBRATE
+    calibration: {statistic: quantile, q: 0.25, feature: delivery_pct_20d_avg,
+                  population: {is_fno_eligible: true}, period: design_only}
+  band_cash:
+    value: CALIBRATE
+    calibration: {statistic: quantile, q: 0.25, feature: delivery_pct_20d_avg,
+                  population: {is_fno_eligible: false}, period: design_only}
+
+composites: {}
+
+gates:
+  - {code: G1, expr: "adv_20d_cr >= 25", unknown_blocks: true}
+  - {code: G2, expr: "price_vs_dma200 > 1.0 AND price_vs_dma50 > 1.0", unknown_blocks: true}
+  - {code: G3, expr: "ret_12m_skip_1m > 0", unknown_blocks: true}
+  - {code: G4, expr: "vol_adj_mom_12m >= 0.60", unknown_blocks: true}
+  - {code: G5, expr: "rel_strength_6m_vs_nifty200_tri >= 0.05", unknown_blocks: true}
+  - {code: G6, expr: "delivery_pct_20d_avg >= if(is_fno_eligible, band_fno, band_cash)", unknown_blocks: true}
+  - {code: G7, expr: "surveillance_stage == surveillance_stage.none", unknown_blocks: true}
+
+size_dependent_checks:
+  - {code: S1, expr: "impact_cost(provisional_value_cr, adv_20d_cr) <= 0.0035"}
+  - {code: S2, expr: "provisional_value_cr <= 0.10 * adv_20d_cr"}
+
+ranking:
+  expr: "0.60 * z(vol_adj_mom_12m) + 0.40 * z(vol_adj_mom_6m)"
+
+lifecycle:
+  signal_ttl: {value: 3, unit: trading_sessions}
+
+sizing:
+  method: stop_risk_budget
+  params: {notional_capital: OPEN, risk_to_stop_pct: OPEN, max_position_pct: OPEN}
+  formula: "min(notional_capital * risk_to_stop_pct / (2.5 * atr_pct_20), notional_capital * max_position_pct)"
+
+proposed_execution_rule:
+  scope: simulation_and_plan_only
+  entry_ref: "close_raw(signal_date)"
+  entry_high: "entry_ref * 1.03"
+  target_qty: "min(floor(target_value / entry_ref), min(floor(hard_cap_value / entry_high), floor(notional_capital * risk_to_stop_pct / (entry_high * 2.5 * atr_pct_20))))"
+  tranches:
+    - n: 1
+      weight: 1.0
+      limit: "entry_high"
+      qty: "target_qty"
+      attempt_policy: single_session
+      recheck_gates: []
+      recheck_failure: void_signal
+  on_exhausted: void_signal
+  exit_execution: open_next_executable_session
+
+stop:
+  evaluation_order: test_then_update
+  initial: "entry_basis * (1 - 2.5 * atr_pct_20)"
+  update: "max(stop_prev, highest_close_since_entry * (1 - 2.5 * atr_pct_at_peak))"
+
+exit_rules:
+  - {code: X1, cadence: daily,  expr: "close_raw(eval_date) < stop_in_force"}
+  - {code: X2, cadence: daily,  expr: "persist(price_vs_dma50 < 1.0, 3, persist_unit.session)"}
+  - {code: X3, cadence: weekly, expr: "vol_adj_mom_12m < 0.30"}
+  - {code: X4, cadence: daily,  expr: "holding_days >= 180"}
+  - {code: X5, cadence: daily,  expr: "surveillance_stage == surveillance_stage.asm_lt_2plus OR surveillance_stage == surveillance_stage.asm_st_2plus OR surveillance_stage == surveillance_stage.gsm_any"}
+
+cooldown:
+  trading_days: 20
+  applies_after: [X1, X2, X3, X4, X5]
+
+review_triggers: []
+
+corporate_action_policy: standard_equity_ca_policy_v2
+ca_state_held: [entry_ref, entry_high, entry_basis, highest_close_since_entry,
+                stop_prev, stop_in_force, target_qty, current_earmark_qty]
+signal_void_on: [band_close_event, surveillance_entry, transformative_ca]
+
+benchmark: NIFTY_200_MOMENTUM_30_TRI
+
+ai_inputs: {permitted: false}
+
+validation:
+  protocol: document_04
+  warm_up_years: 1
+  evaluable_years: 11
+  holdout_years: 3
+
+retirement:
+  min_closed_positions: 50
+  min_years: 2
+  metric: rolling_return_vs_benchmark_after_costs
+  window_years: 2
+  threshold: 0.0

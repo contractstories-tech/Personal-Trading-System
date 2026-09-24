@@ -1,0 +1,185 @@
+schema_version: 5
+code: ltqv_v1
+strategy_class: fundamental_long_term
+version: 1.0.0-prevalidation.7
+lineage: ltqv
+status: experimental
+registry: {version: 2.2.0, sha256: 2d531e2a71aee5c9ed9e00c4ac9534dddb4c7d25b4703e3b2b505483087aa128}
+
+hypothesis: >
+  Businesses that earn high and stable returns on capital, convert profits
+  into cash, and carry low financial and governance risk tend to compound
+  book value faster than the market expects. Buying them when they trade
+  below their own historical valuation - rather than below a fixed multiple -
+  captures that compounding without paying for current enthusiasm.
+
+trade_direction: long
+horizon: years
+data_resolution: eod_filings
+evaluation:
+  entry_triggers: [{trigger: daily_eod}, {trigger: on_filing}]
+  risk_trigger: {trigger: daily_eod}
+selection_method: rank_and_gate
+
+universe:
+  base: market_eligible
+  exclude_sectors: [banks, nbfc, insurance, capital_markets, metals_mining, cement,
+                    commodity_chemicals, sugar, oil_gas_upstream, shipping]
+  filters: []
+
+features:
+  - operating_history_years
+  - roce_3y_avg
+  - roce_hy_ttm
+  - roce_5y_trend
+  - roce_stability
+  - cfo_pat_3y
+  - debt_equity
+  - interest_coverage
+  - positive_revenue_growth_years_5y
+  - exceptional_frequency
+  - market_cap
+  - earnings_yield_ttm
+  - ey_median_5y
+  - ey_vs_own_5y_median
+  - ev_ebitda_vs_sector
+  - earnings_yield_spread
+  - realised_vol_1y
+  - promoter_pledge_pct
+  - auditor_resignation_5y
+  - forensic_flag_count
+  - forensic_coverage_pct
+  - surveillance_stage
+
+unknown_overrides:
+  roce_stability: penalise
+  positive_revenue_growth_years_5y: penalise
+  exceptional_frequency: penalise
+  ev_ebitda_vs_sector: penalise
+  earnings_yield_spread: penalise
+  promoter_pledge_pct: fail
+  auditor_resignation_5y: fail
+  forensic_flag_count: fail
+  forensic_coverage_pct: fail
+  surveillance_stage: fail
+
+params: {}
+
+composites:
+  quality_composite:
+    inputs:
+      - {code: roce_3y_avg,       direction: higher_better}
+      - {code: roce_5y_trend,     direction: higher_better}
+      - {code: cfo_pat_3y,        direction: higher_better}
+      - {code: debt_equity,       direction: lower_better}
+      - {code: interest_coverage, direction: higher_better}
+    min_inputs_known: 4
+  value_composite:
+    inputs:
+      - {code: ey_vs_own_5y_median,   direction: higher_better}
+      - {code: ev_ebitda_vs_sector,   direction: lower_better}
+      - {code: earnings_yield_spread, direction: higher_better}
+    min_inputs_known: 2
+  consistency_composite:
+    inputs:
+      - {code: roce_stability,                   direction: higher_better}
+      - {code: positive_revenue_growth_years_5y, direction: higher_better}
+      - {code: exceptional_frequency,            direction: lower_better}
+    min_inputs_known: 2
+
+gates:
+  - {code: G1,  expr: "operating_history_years >= 7", unknown_blocks: true}
+  - {code: G2,  expr: "roce_3y_avg >= 0.15", unknown_blocks: true}
+  - {code: G3,  expr: "cfo_pat_3y >= 0.70", unknown_blocks: true}
+  - {code: G4,  expr: "interest_coverage >= 2.5 AND (debt_equity <= 1.0 OR interest_coverage >= 6)", unknown_blocks: true}
+  - {code: G5,  expr: "promoter_pledge_pct <= 0.15", unknown_blocks: true}
+  - {code: G6,  expr: "auditor_resignation_5y == false", unknown_blocks: true}
+  - {code: G7,  expr: "forensic_flag_count <= 1 AND forensic_coverage_pct >= 0.75", unknown_blocks: true}
+  - {code: G8,  expr: "surveillance_stage == surveillance_stage.none", unknown_blocks: true}
+  - {code: G9,  expr: "earnings_yield_ttm > 0 AND ey_median_5y > 0 AND ey_vs_own_5y_median >= 1.0", unknown_blocks: true}
+
+size_dependent_checks: []
+
+ranking:
+  expr: "0.50 * quality_composite + 0.30 * value_composite + 0.20 * consistency_composite"
+
+lifecycle:
+  signal_ttl: {value: 30, unit: trading_sessions}
+
+sizing:
+  method: target_volatility_contribution
+  params: {notional_capital: OPEN, target_vol_contribution: OPEN, max_position_pct: OPEN}
+  formula: "min(notional_capital * target_vol_contribution / realised_vol_1y, notional_capital * max_position_pct)"
+  revised_formula: "min(notional_capital * target_vol_contribution / realised_vol_1y, notional_capital * max_position_pct)"
+
+proposed_execution_rule:
+  scope: simulation_and_plan_only
+  entry_ref: "close_raw(signal_date)"
+  entry_high: "entry_ref * 1.05"
+  target_qty: "min(floor(target_value / entry_ref), floor(hard_cap_value / entry_high))"
+  revised_target_qty: "min(floor(revised_target_value / close_raw(prev_session(eval_date))), floor(hard_cap_value / tranche_limit))"
+  tranches:
+    - n: 1
+      weight: 0.3334
+      limit: "entry_high"
+      qty: "floor(tranche_weight * target_qty)"
+      attempt_policy: every_session_until_ttl
+      recheck_gates: [G1, G2, G3, G4, G5, G6, G7, G8, G9]
+      recheck_failure: void_signal
+    - n: 2
+      weight: 0.3333
+      limit: "entry_high * 1.15"
+      qty: "max(0, min(floor(tranche_weight * revised_target_qty), revised_target_qty - current_earmark_qty))"
+      attempt_policy: retry_window
+      first_attempt_sessions_after_tranche_1: 21
+      retry_sessions: 10
+      recheck_gates: [G1, G2, G3, G4, G5, G6, G7, G8]
+      recheck_failure: skip_attempt
+    - n: 3
+      weight: 0.3333
+      limit: "entry_high * 1.15"
+      qty: "max(0, revised_target_qty - current_earmark_qty)"
+      attempt_policy: retry_window
+      first_attempt_sessions_after_tranche_1: 42
+      retry_sessions: 10
+      recheck_gates: [G1, G2, G3, G4, G5, G6, G7, G8]
+      recheck_failure: skip_attempt
+  on_exhausted: cancel_release_keep_holding
+  exit_execution: open_next_executable_session
+
+exit_rules:
+  - {code: X1, cadence: daily, expr: "persist(roce_hy_ttm < 0.12, 2, persist_unit.half_year)"}
+  - {code: X2, cadence: daily, expr: "cfo_pat_3y < 0.50"}
+  - {code: X3, cadence: daily, expr: "ey_vs_own_5y_median <= 0.57 AND roce_5y_trend <= 0"}
+  - {code: X4, cadence: daily, expr: "promoter_pledge_pct > 0.25 OR auditor_resignation_5y == true"}
+  - {code: X5, cadence: daily, expr: "surveillance_stage == surveillance_stage.asm_lt_2plus OR surveillance_stage == surveillance_stage.asm_st_2plus OR surveillance_stage == surveillance_stage.gsm_any"}
+
+cooldown:
+  trading_days: 60
+  applies_after: [X1, X2, X3, X4, X5]
+
+review_triggers:
+  - "earnings_yield_ttm <= 0"
+  - "forensic_flag_count >= 1"
+
+corporate_action_policy: standard_equity_ca_policy_v2
+ca_state_held: [entry_ref, entry_high, tranche_limit, target_qty, revised_target_qty, current_earmark_qty]
+signal_void_on: [governance_event, surveillance_entry, transformative_ca]
+
+benchmark: NIFTY_500_TRI
+secondary_benchmark: NIFTY_200_QUALITY_30_TRI
+
+ai_inputs: {permitted: false}
+
+validation:
+  protocol: document_04
+  warm_up_years: 7
+  evaluable_years: 9
+  holdout_years: 3
+
+retirement:
+  min_closed_positions: 20
+  min_years: 3
+  metric: rolling_alpha_vs_secondary_benchmark_after_costs
+  window_years: 3
+  threshold: 0.0

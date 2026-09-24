@@ -1,0 +1,19 @@
+# Tax view - listed equity, STT paid, resident individual. Effective-dated by SALE date. Document 04 s6.
+# A view only: it never gates a strategy's validity.
+schedule_version: 1.0.0
+holding_period_long_term: "more than 12 months"
+regimes:
+  - {from: 2004-10-01, to: 2018-03-31, stcg_rate: 0.15, ltcg_rate: 0.0,   ltcg_exemption_per_fy: null,
+     status: verified, note: "LTCG exempt (old s10(38))"}
+  - {from: 2018-04-01, to: 2024-07-22, stcg_rate: 0.15, ltcg_rate: 0.10,  ltcg_exemption_per_fy: 100000,
+     status: verified, grandfathering: "cost = max(actual cost, min(FMV on 31 Jan 2018, sale price)) for shares acquired before 1 Feb 2018"}
+  - {from: 2024-07-23, to: null,       stcg_rate: 0.20, ltcg_rate: 0.125, ltcg_exemption_per_fy: 125000,
+     status: verified, note: "unchanged by Budget 2026; Income Tax Act 2025 in force from 1 Apr 2026 renumbers sections only"}
+exemption_note: "FY 2024-25 straddles the change; the reference applies the regime in force on each sale date and the FY exemption of the regime in force at FY end - Stage 0 to confirm treatment of the straddle year"
+set_off:
+  short_term_loss: "against short-term and long-term gains"
+  long_term_loss: "against long-term gains only"
+  carry_forward_years: 8
+cost_basis: "sale consideration minus cost of acquisition minus transfer expenses; STT is not deductible"
+lot_matching: FIFO
+view_parameters: {cess: 0.04, surcharge: OPEN}
