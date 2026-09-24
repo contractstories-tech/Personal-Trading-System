@@ -14,9 +14,16 @@
   panel_as_of(panel, E)           The panel as one decision at E may use it: bars with trade_date <= E and
                                   usable_from <= E's cutoff; delivery values not yet available at E are masked.
 
-A sequence of historical decisions is built either from history_known_as_of(E) for each E (exact), or from
-panel_as_of(panel, E) (conservative). history_known_as_of(end) over a long range must NEVER be used for a
-sequence: every earlier decision would see corrections that arrived after it.
+A sequence of historical decisions is built either from history_known_as_of(E) for each E, or from
+panel_as_of(panel, E). They are not equivalent evidence (r5.6, review of r5.5):
+  exact_per_decision   history_known_as_of(E) per decision: exactly what each decision had. The evidential
+                       standard, and the only contract a sealed holdout evaluation may use.
+  first_known_panel    look-ahead-free, but information-POORER than a real decision: a correction known by E is
+                       ignored if the bar was first printed earlier. That is not "conservative" - a stale wrong
+                       print can help or hurt a strategy - so results on it are labelled and never promotion
+                       evidence.
+A run manifest records which one it used (price_read_contract). history_known_as_of(end) over a long range must
+NEVER be used for a sequence: every earlier decision would see corrections that arrived after it.
 
 Every read passes the duplicate-identity check, the canary and the look-ahead guard; sentinels are removed
 only after all three.

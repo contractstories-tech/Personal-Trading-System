@@ -9,15 +9,11 @@ Every run manifest (schemas/run_manifest.schema.json) records this package diges
 import hashlib, json, os, platform, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SKIP = {"MANIFEST.json", "__pycache__", ".pytest_cache"}
+SKIP = {"MANIFEST.json", "__pycache__", ".pytest_cache", "run_all.log"}   # run_all.log: a local test log
 # The one place the release is set. --verify checks MANIFEST.json and README.md agree with it
 # (r5.2 shipped labelled "r5.1" because this string was hardcoded and never verified).
-RELEASE = "r5.5"
-TEST_COMMAND = ("python3 test_speclint.py && python3 speclint.py && "
-                "python3 render_cards.py --check docs/Strategy-Pack-Doc-03-r7.md && python3 test_golden.py && "
-                "python3 test_features.py && python3 test_card_golden.py && "
-                "python3 tests/test_m2.py && python3 tests/test_manifest.py && "
-                "python3 tests/test_release.py && python3 mutation_check.py")
+RELEASE = "r5.6"
+TEST_COMMAND = "python run_all.py   (every contract command, with this interpreter, on any OS)"
 
 
 class StrayFileError(SystemExit):
@@ -55,13 +51,22 @@ def build():
 
 
 if __name__ == "__main__":
+    for _s in (sys.stdout, sys.stderr):   # UTF-8 output whatever the console or pipe (Windows defaults to cp1252)
+        _s.reconfigure(encoding="utf-8")
     m = build()
     path = os.path.join(HERE, "MANIFEST.json")
     if len(sys.argv) > 1 and sys.argv[1] == "--verify":
-        old = json.load(open(path))
+        old = json.load(open(path, encoding="utf-8"))
         diff = sorted(set(old["files"].items()) ^ set(m["files"].items()))
         for d in sorted({k for k, _ in diff}):
-            print("MANIFEST MISMATCH:", d)
+            hint = ""
+            fp = os.path.join(HERE, *d.split("/"))
+            if d in old["files"] and os.path.exists(fp):
+                raw = open(fp, "rb").read()
+                if b"\r\n" in raw and hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest() == old["files"][d]:
+                    hint = ("  (only its line endings changed to CRLF - git core.autocrlf or an editor did it; "
+                            "restore LF, and keep the kit in git with '* -text' in .gitattributes)")
+            print("MANIFEST MISMATCH:", d + hint)
         # the stored digest is the package's identity in every run manifest, so verify it too
         recomputed = hashlib.sha256(json.dumps(old["files"], sort_keys=True).encode()).hexdigest()
         digest_ok = old.get("package_digest") == recomputed
@@ -71,12 +76,12 @@ if __name__ == "__main__":
         release_ok = old.get("release") == RELEASE
         if not release_ok:
             print(f"MANIFEST MISMATCH: release is {old.get('release')!r}, this package is {RELEASE!r}")
-        readme = open(os.path.join(HERE, "README.md")).readline()
+        readme = open(os.path.join(HERE, "README.md"), encoding="utf-8").readline()
         readme_ok = readme.rstrip().endswith(f"release {RELEASE}")
         if not readme_ok:
             print(f"MANIFEST MISMATCH: README.md heading does not name release {RELEASE}")
         ok = not diff and digest_ok and release_ok and readme_ok
         print("manifest OK" if ok else "manifest verification FAILED")
         sys.exit(0 if ok else 1)
-    json.dump(m, open(path, "w"), indent=1, sort_keys=True)
+    json.dump(m, open(path, "w", encoding="utf-8", newline="\n"), indent=1, sort_keys=True)
     print(f"MANIFEST.json written: {len(m['files'])} files, package_digest {m['package_digest'][:16]}")

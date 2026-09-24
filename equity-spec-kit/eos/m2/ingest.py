@@ -15,13 +15,17 @@ symbol) quarantine the row instead of rejecting the day (r5.5, audit C5); the fi
 quarantined share exceeds quality.max_quarantine_share, or on a structural fault (header, dates, canary prefix).
 Backfill inference is refused for a file received on its own trade date or on/after live_capture_start
 (r5.5, audit B3b): a replay must never see a file its live run did not have.
+Raw landing (r5.6). Before anything is parsed, the file's exact bytes are landed write-once in the warehouse
+(_raw/<source_id>/<sha256><ext>) and parsing reads the landed copy. The batch that commits the file's rows also
+commits a raw_file row naming the landed copy, its original name, source URL and retrieval time, so every
+observation can be re-derived from bytes the warehouse holds. A rejected file's bytes stay landed (evidence of
+what was received) but get no raw_file row.
 One file is one warehouse batch, written under one writer lock (review B2, B3): observations, conflicts,
 coverage and the ingestion-log entry become visible together or not at all, and no second ingestion can
 allocate a version between this one's read and its commit.
 """
 import datetime as dt
 import fractions
-import hashlib
 import os
 
 from .. import canary
@@ -39,10 +43,6 @@ class QualityError(Exception):
 
 class KillSwitch(QualityError):
     """Row count collapsed versus the prior session; nothing written or published."""
-
-
-def _sha(path):
-    return hashlib.sha256(open(path, "rb").read()).hexdigest()
 
 
 def _latest(rows):
@@ -120,11 +120,21 @@ def _version(wh, table, trade_date, parsed, fields, meta, mode, received_at, pub
                                 rows_changed=changed, rows_unchanged=unchanged)
 
 
+def _land(wh, source_id, path, received_at, source_url, retrieved_at):
+    sha, rel, size = wh.land(source_id, path)
+    raw = {"source_id": source_id, "file_sha256": sha, "original_name": os.path.basename(path),
+           "source_url": source_url, "retrieved_at": retrieved_at, "received_at": received_at,
+           "size_bytes": size, "landed_path": rel}
+    return sha, wh.raw_path(rel), raw
+
+
 def _commit(wh, table, source_id, trade_date, new, conflicts, counts, sha, received_at, mode, n_rows, _crash_at=None,
-            quarantine=()):
+            quarantine=(), raw=None):
     """Everything one file produces, in ONE batch."""
     key = trade_date.isoformat()
     b = wh.batch()
+    if raw is not None:
+        b.add("raw_file", key, [raw])
     b.add(table, key, new)
     b.add("data_conflict", key, conflicts)
     b.add("row_quarantine", key, list(quarantine))
@@ -163,15 +173,18 @@ def _enforce_quarantine_share(path, quarantined, total, pol):
                            f"{pol['quality']['max_quarantine_share']:.0%} quarantine limit - nothing written: {reasons}")
 
 
-def ingest_bhavcopy(wh, path, received_at, mode="backfill", published=None, now=None, expect_date=None, policy=None, _crash_at=None):
+def ingest_bhavcopy(wh, path, received_at, mode="backfill", published=None, now=None, expect_date=None, policy=None,
+                    source_url=None, retrieved_at=None, _crash_at=None):
     with wh.writer():
-        return _ingest_bhavcopy(wh, path, received_at, mode, published, now, expect_date, policy, _crash_at)
+        return _ingest_bhavcopy(wh, path, received_at, mode, published, now, expect_date, policy, source_url,
+                                retrieved_at, _crash_at)
 
 
-def _ingest_bhavcopy(wh, path, received_at, mode, published, now, expect_date, policy, _crash_at):
+def _ingest_bhavcopy(wh, path, received_at, mode, published, now, expect_date, policy, source_url, retrieved_at,
+                     _crash_at):
     pol = policy or load_policy()
-    sha = _sha(path)
-    fmt, day, rows = parsers.parse_bhavcopy(parsers.read_bytes(path), os.path.basename(path))
+    sha, landed, raw = _land(wh, "nse_cm_bhavcopy", path, received_at, source_url, retrieved_at)
+    fmt, day, rows = parsers.parse_bhavcopy(parsers.read_bytes(landed), os.path.basename(path))
     if _already(wh, sha, day):
         return {"noop": True, "file_sha256": sha}
     if expect_date and day != expect_date:
@@ -225,20 +238,22 @@ def _ingest_bhavcopy(wh, path, received_at, mode, published, now, expect_date, p
     q_isins = {q["isin"] for q in quarantined}
     conflicts = [c for c in conflicts if c["isin"] not in q_isins]   # quarantined, not absent
     _commit(wh, "price_observation", "nse_cm_bhavcopy", day, new, conflicts, counts, sha, received_at, mode, len(rows),
-            _crash_at, quarantine=quarantined)
+            _crash_at, quarantine=quarantined, raw=raw)
     return {"noop": False, "file_sha256": sha, "format": fmt, "trade_date": day, "warnings": warnings,
             "conflicts": conflicts, "quarantined": quarantined, **counts}
 
 
-def ingest_delivery(wh, path, received_at, mode="backfill", published=None, now=None, policy=None, _crash_at=None):
+def ingest_delivery(wh, path, received_at, mode="backfill", published=None, now=None, policy=None, source_url=None,
+                    retrieved_at=None, _crash_at=None):
     with wh.writer():
-        return _ingest_delivery(wh, path, received_at, mode, published, now, policy, _crash_at)
+        return _ingest_delivery(wh, path, received_at, mode, published, now, policy, source_url, retrieved_at,
+                                _crash_at)
 
 
-def _ingest_delivery(wh, path, received_at, mode, published, now, policy, _crash_at):
+def _ingest_delivery(wh, path, received_at, mode, published, now, policy, source_url, retrieved_at, _crash_at):
     pol = policy or load_policy()
-    sha = _sha(path)
-    fmt, day, rows = parsers.parse_mto(parsers.read_bytes(path), os.path.basename(path))
+    sha, landed, raw = _land(wh, "nse_cm_delivery", path, received_at, source_url, retrieved_at)
+    fmt, day, rows = parsers.parse_mto(parsers.read_bytes(landed), os.path.basename(path))
     if _already(wh, sha, day):
         return {"noop": True, "file_sha256": sha}
     if mode == "backfill":
@@ -274,6 +289,6 @@ def _ingest_delivery(wh, path, received_at, mode, published, now, policy, _crash
     q_isins = {q["isin"] for q in quarantined if q["isin"]}
     reissue = [c for c in reissue if c["isin"] not in q_isins]
     _commit(wh, "delivery_observation", "nse_cm_delivery", day, new, conflicts + reissue, counts, sha,
-            received_at, mode, len(mapped), _crash_at, quarantine=quarantined)
+            received_at, mode, len(mapped), _crash_at, quarantine=quarantined, raw=raw)
     return {"noop": False, "file_sha256": sha, "format": fmt, "trade_date": day, "conflicts": conflicts + reissue,
             "quarantined": quarantined, **counts}

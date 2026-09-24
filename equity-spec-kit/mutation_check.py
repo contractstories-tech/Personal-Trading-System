@@ -10,13 +10,22 @@ output field). A new survivor therefore means a missing golden case - add the ca
 
     python3 mutation_check.py            (a few minutes; exit 0 = no unlisted survivor)
     python3 mutation_check.py --list     prints every survivor with its allowlist status
+    python3 mutation_check.py --jobs N   worker processes (default: CPU count)
+
+Cross-platform (r5.6). r5.5 bounded each mutant with signal.SIGALRM, which does not exist on Windows. Mutants now
+run in worker processes (this file with --worker) that report one line per mutant; the parent enforces the
+per-mutant time limit by watching for that line and kills a worker that stops reporting. A mutant that hangs
+counts as detected, as before, and the worker is restarted after it. No signals, so it runs the same on Windows.
 """
 import ast
 import copy
 import os
-import signal
+import queue
+import subprocess
 import sys
+import threading
 import types
+from concurrent.futures import ThreadPoolExecutor
 
 import yaml
 
@@ -27,12 +36,9 @@ SWAP = {ast.Lt: ast.LtE, ast.LtE: ast.Lt, ast.Gt: ast.GtE, ast.GtE: ast.Gt, ast.
         ast.Mult: ast.Div, ast.Div: ast.Mult, ast.And: ast.Or, ast.Or: ast.And}
 
 
-class _Timeout(Exception):
-    pass
-
-
-def _alarm(*_):
-    raise _Timeout()
+MUTANT_SECONDS = 10     # a mutant that has not finished its golden cases by then counts as detected
+STARTUP_SECONDS = 120   # a worker's imports and golden-file loading
+TAG = "@@mutant"
 
 
 def _sites(tree):
@@ -64,50 +70,110 @@ def _mutate(tree, site):
     return ast.fix_missing_locations(t)
 
 
-def survivors(module_name, detect):
+def _detectors():
+    import test_golden as TG
+    import test_features as TF
+    return {"reference_sim": lambda: any(not TG.close(g, w, t) for _, g, w, t in TG.cases()),
+            "reference_features": lambda: any(not TG.close(g, w, 1e-6) for _, g, w in TF.cases())}
+
+
+def _load(module_name):
+    src = open(os.path.join(HERE, f"{module_name}.py"), encoding="utf-8").read()
+    tree = ast.parse(src)
+    return tree, src.splitlines(), _sites(tree)
+
+
+def worker(module_name, start, stop):
+    """Runs mutants start..stop-1 of one module in this process; prints '@@mutant <index> <caught 0|1>' as each
+    finishes. Any exception from a mutant, including one raised while building it, counts as detected."""
+    detect = _detectors()[module_name]
     mod = __import__(module_name)
-    src = open(os.path.join(HERE, f"{module_name}.py")).read()
-    tree, lines = ast.parse(src), src.splitlines()
+    tree, _, sites = _load(module_name)
     originals = {k: getattr(mod, k) for k in dir(mod) if callable(getattr(mod, k)) and not k.startswith("__")}
-    out, sites = [], _sites(tree)
-    for site in sites:
+    for i in range(start, stop):
         m = types.ModuleType("mutant")
         m.__dict__.update({k: v for k, v in mod.__dict__.items() if k.startswith("__") is False})
         try:
-            exec(compile(_mutate(tree, site), "mutant", "exec"), m.__dict__)
+            exec(compile(_mutate(tree, sites[i]), "mutant", "exec"), m.__dict__)
         except Exception:
+            print(f"{TAG} {i} 1", flush=True)
             continue
         for k in originals:
             if hasattr(m, k):
                 setattr(mod, k, getattr(m, k))
-        signal.alarm(3)
         try:
             caught = detect()
         except BaseException:
             caught = True
         finally:
-            signal.alarm(0)
             for k, v in originals.items():
                 setattr(mod, k, v)
-        if not caught:
-            out.append({"module": module_name, "function": site[0], "kind": site[2],
-                        "line": lines[site[3] - 1].strip()})
-    return out, len(sites)
+        print(f"{TAG} {i} {int(bool(caught))}", flush=True)
+
+
+def _run_range(module_name, start, stop):
+    """Drives workers over [start, stop): returns {index: caught}. A worker silent for MUTANT_SECONDS is killed,
+    the mutant it was running is recorded as detected (it hung), and a new worker resumes after it."""
+    results = {}
+    nxt = start
+    while nxt < stop:
+        proc = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--worker", module_name, str(nxt), str(stop)],
+                                cwd=HERE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
+        lines = queue.Queue()
+        threading.Thread(target=lambda: ([lines.put(x) for x in proc.stdout], lines.put(None)), daemon=True).start()
+        limit = STARTUP_SECONDS + MUTANT_SECONDS
+        while True:
+            try:
+                line = lines.get(timeout=limit)
+            except queue.Empty:
+                proc.kill()
+                proc.wait()
+                results[nxt] = True        # hung: detected
+                nxt += 1
+                break
+            if line is None:               # worker exited
+                proc.wait()
+                if nxt < stop:             # it died on this mutant (e.g. a crash outside Python): detected
+                    results[nxt] = True
+                    nxt += 1
+                break
+            if line.startswith(TAG):
+                _, i, caught = line.split()
+                results[int(i)] = caught == "1"
+                nxt = int(i) + 1
+                limit = MUTANT_SECONDS
+                if nxt >= stop:
+                    proc.wait()
+                    break
+        proc.stdout.close()
+    return results
+
+
+def survivors(module_name, jobs):
+    _, lines, sites = _load(module_name)
+    n = len(sites)
+    size = max(1, -(-n // (jobs * 3)))
+    ranges = [(a, min(a + size, n)) for a in range(0, n, size)]
+    results = {}
+    with ThreadPoolExecutor(max_workers=jobs) as ex:
+        for r in ex.map(lambda ab: _run_range(module_name, *ab), ranges):
+            results.update(r)
+    assert sorted(results) == list(range(n)), "every mutant must report"
+    out = [{"module": module_name, "function": sites[i][0], "kind": sites[i][2],
+            "line": lines[sites[i][3] - 1].strip()} for i in range(n) if not results[i]]
+    return out, n
 
 
 def main():
-    signal.signal(signal.SIGALRM, _alarm)
-    import test_golden as TG
-    import test_features as TF
-    allow = yaml.safe_load(open(os.path.join(HERE, "golden", "mutation_allowlist.yaml")))["equivalent_mutants"]
+    jobs = int(sys.argv[sys.argv.index("--jobs") + 1]) if "--jobs" in sys.argv else (os.cpu_count() or 2)
+    allow = yaml.safe_load(open(os.path.join(HERE, "golden", "mutation_allowlist.yaml"), encoding="utf-8"))["equivalent_mutants"]
     key = lambda d: (d["module"], d["function"], d["kind"], d["line"])  # noqa: E731
     allowed = {}
     for a in allow:
         allowed[key(a)] = allowed.get(key(a), 0) + a.get("count", 1)
     found, total = [], 0
-    for module, detect in (("reference_sim", lambda: any(not TG.close(g, w, t) for _, g, w, t in TG.cases())),
-                           ("reference_features", lambda: any(not TG.close(g, w, 1e-6) for _, g, w in TF.cases()))):
-        s, n = survivors(module, detect)
+    for module in ("reference_sim", "reference_features"):
+        s, n = survivors(module, jobs)
         found += s
         total += n
     counts = {}
@@ -128,4 +194,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    for _s in (sys.stdout, sys.stderr):   # UTF-8 output whatever the console or pipe (Windows defaults to cp1252)
+        _s.reconfigure(encoding="utf-8")
+    if sys.argv[1:2] == ["--worker"]:
+        worker(sys.argv[2], int(sys.argv[3]), int(sys.argv[4]))
+    else:
+        main()

@@ -1,0 +1,4 @@
+# The spec kit binds every file by SHA-256 (equity-spec-kit/MANIFEST.json) and each card version by the hash of
+# its bytes. Line-ending conversion (core.autocrlf on Windows) would change those bytes, so git must store and
+# check out every file exactly as committed.
+* -text

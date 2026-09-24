@@ -8,6 +8,9 @@
 
 Every test runs once per available codec (r5.5, audit B4): JSONL always, Parquet whenever pyarrow is installed.
 r5.4 exercised Parquet in one test only, which is how a store invariant held on JSONL and not on Parquet.
+And once per platform path (r5.6): on Windows the real Windows primitives; on a POSIX host both the POSIX
+primitives and the Windows code paths against emulated kernel32 / msvcrt (eos/fsio.py). The emulation catches a
+Windows-only call on the wrong path (r5.5's directory fsync); it does not replace running this suite on Windows.
 """
 import datetime as dt
 import decimal
@@ -24,7 +27,7 @@ sys.path.insert(0, KIT)
 sys.path.insert(0, HERE)
 import yaml  # noqa: E402
 import fixtures as F  # noqa: E402
-from eos import canary, pit, source_policy, store  # noqa: E402
+from eos import canary, fsio, pit, source_policy, store  # noqa: E402
 from eos.m2 import ingest, parsers, resolve  # noqa: E402
 from eos.timeutil import IST, UTC, at_ist, ist, parse_ts, run_cutoffs  # noqa: E402
 import threading  # noqa: E402
@@ -53,7 +56,18 @@ class Env:
         return self
 
     def __exit__(self, *a):
-        shutil.rmtree(self.dir)
+        rmtree(self.dir)
+
+
+def rmtree(path):
+    """Landed raw files are read-only; Windows refuses to delete a read-only file until it is made writable."""
+    def retry(func, p, _exc):
+        os.chmod(p, 0o700)
+        func(p)
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=retry)
+    else:
+        shutil.rmtree(path, onerror=retry)
 
 
 def raises(exc, fn, *a, **k):
@@ -84,7 +98,7 @@ def _g(rows):
 
 @case
 def golden_pit_cases_pass_on_production_primitive():
-    G = yaml.safe_load(open(os.path.join(KIT, "golden", "golden_cases.yaml")))
+    G = yaml.safe_load(open(os.path.join(KIT, "golden", "golden_cases.yaml"), encoding="utf-8"))
     rows = _g(G["pit"]["rows"])
     for c in G["pit"]["cases"]:
         r = pit.asof(rows, "INE0TEST", c["basis"], ist(c["cutoff"]))
@@ -153,9 +167,9 @@ def zipped_file_is_read():
 def unknown_header_fails_loudly():
     with Env() as e:
         p = e.f("x.csv")
-        open(p, "w").write("SYMBOL,SERIES,OPEN,HIGH,LOW,CLOSE,ISIN\nA,EQ,1,1,1,1,INE000A01011\n")
+        open(p, "w", encoding="utf-8", newline="\n").write("SYMBOL,SERIES,OPEN,HIGH,LOW,CLOSE,ISIN\nA,EQ,1,1,1,1,INE000A01011\n")
         raises(parsers.FormatError, parsers.parse_bhavcopy, parsers.read_bytes(p))
-        open(p, "w").write("hello\n")
+        open(p, "w", encoding="utf-8", newline="\n").write("hello\n")
         raises(parsers.FormatError, parsers.parse_mto, parsers.read_bytes(p))
 
 
@@ -174,8 +188,8 @@ def excess_precision_and_non_numbers_rejected():
 def mixed_dates_in_one_file_rejected():
     with Env() as e:
         p = F.legacy(e.f("a.csv"), D1)
-        txt = open(p).read().replace("16-SEP-2026", "17-SEP-2026", 1)
-        open(p, "w").write(txt)
+        txt = open(p, encoding="utf-8").read().replace("16-SEP-2026", "17-SEP-2026", 1)
+        open(p, "w", encoding="utf-8", newline="\n").write(txt)
         raises(parsers.FormatError, parsers.parse_bhavcopy, parsers.read_bytes(p))
 
 
@@ -214,10 +228,10 @@ def usable_from_is_never_before_publication():
 def policy_refuses_inferred_time_at_or_after_cutoff():
     with Env() as e:
         for sid in ("nse_cm_bhavcopy", "nse_cm_delivery"):
-            p = yaml.safe_load(open(os.path.join(KIT, "policies", "source_policy.yaml")))
+            p = yaml.safe_load(open(os.path.join(KIT, "policies", "source_policy.yaml"), encoding="utf-8"))
             p["sources"][sid]["availability"].update(inferred_published_time_ist="22:45", policy_lag_minutes=15)
             path = e.f(f"sp-{sid}.yaml")
-            yaml.safe_dump(p, open(path, "w"))
+            yaml.safe_dump(p, open(path, "w", encoding="utf-8", newline="\n"))
             raises(source_policy.PolicyError, source_policy.load, path)
         source_policy.load()  # the shipped policy loads
 
@@ -226,10 +240,10 @@ def policy_refuses_inferred_time_at_or_after_cutoff():
 def availability_is_source_specific():
     """B9: the delivery file's inferred time is its own, not the bhavcopy's."""
     with Env() as e:
-        p = yaml.safe_load(open(os.path.join(KIT, "policies", "source_policy.yaml")))
+        p = yaml.safe_load(open(os.path.join(KIT, "policies", "source_policy.yaml"), encoding="utf-8"))
         p["sources"]["nse_cm_delivery"]["availability"]["inferred_published_time_ist"] = "22:50"
         path = e.f("sp.yaml")
-        yaml.safe_dump(p, open(path, "w"))
+        yaml.safe_dump(p, open(path, "w", encoding="utf-8", newline="\n"))
         pol = source_policy.load(path)
         ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("b.csv"), D1), recv(D1), policy=pol)
         ingest.ingest_delivery(e.wh, F.mto(e.f("m.DAT"), D1), recv(D1), policy=pol)
@@ -470,7 +484,7 @@ def crash_at_every_batch_boundary_is_all_or_nothing():
             load_days(e, [D1], deliver=False)
             corr = F.legacy(e.f("c.csv"), D1, F.bars(D1, bump={A: 125}))
             raises(store.SimulatedCrash, ingest.ingest_bhavcopy, e.wh, corr, at_ist(D2, "09:00"), _crash_at=point)
-            assert not os.path.exists(os.path.join(e.wh.root, ".writer.lock")), point
+            assert _lock_free(e.wh), point                       # a crash inside the writer releases the lock
             if point == "before_record":
                 assert _state(e.wh) == before, point            # nothing became visible
                 assert e.wh.orphans(), point                     # only unreferenced debris
@@ -507,9 +521,9 @@ def uncommitted_part_listed_in_a_manifest_is_refused():
     with Env() as e:
         load_days(e, [D1], deliver=False)
         pdir = e.wh.pdir("price_observation", D1.isoformat())
-        man = json.load(open(os.path.join(pdir, "_manifest.json")))
+        man = json.load(open(os.path.join(pdir, "_manifest.json"), encoding="utf-8"))
         man["parts"][0]["batch"] = "never-committed"
-        json.dump(man, open(os.path.join(pdir, "_manifest.json"), "w"))
+        json.dump(man, open(os.path.join(pdir, "_manifest.json"), "w", encoding="utf-8", newline="\n"))
         raises(store.IntegrityError, e.wh.read, "price_observation")
 
 
@@ -525,7 +539,7 @@ def tampered_part_is_refused():
         load_days(e, [D1], deliver=False)
         pdir = e.wh.pdir("price_observation", D1.isoformat())
         part = [f for f in os.listdir(pdir) if f.startswith("part-")][0]
-        with open(os.path.join(pdir, part), "a") as f:
+        with open(os.path.join(pdir, part), "a", encoding="utf-8", newline="\n") as f:
             f.write("\n")
         raises(store.StoreError, e.wh.read, "price_observation")
 
@@ -542,11 +556,113 @@ def snapshot_isolates_reads_from_later_writes():
         assert [x["close"] for x in old if x["isin"] == A and x["trade_date"] == D1] == [decimal.Decimal("119")]
 
 
+def _lock_free(wh):
+    try:
+        fd = fsio.lock_exclusive(os.path.join(wh.root, ".writer.lock"))
+    except fsio.LockHeld:
+        return False
+    fsio.unlock(fd)
+    return True
+
+
 @case
-def concurrent_writer_refused():
+def live_writer_refused_and_lock_file_alone_blocks_nothing():
+    """r5.6: the lock is an OS lock. A second holder is refused while the first holds it; a leftover lock FILE
+    (what r5.5 treated as the lock) blocks nothing."""
     with Env() as e:
-        open(os.path.join(e.wh.root, ".writer.lock"), "w").close()
-        raises(store.StoreError, ingest.ingest_bhavcopy, e.wh, F.legacy(e.f("a.csv"), D1), recv(D1))
+        lock = os.path.join(e.wh.root, ".writer.lock")
+        fd = fsio.lock_exclusive(lock)                    # another handle: another writer, as far as the OS knows
+        try:
+            raises(store.StoreError, ingest.ingest_bhavcopy, e.wh, F.legacy(e.f("a.csv"), D1), recv(D1))
+            assert e.wh.partitions("price_observation") == []
+        finally:
+            fsio.unlock(fd)
+        assert os.path.exists(lock)                       # the file stays, and is harmless
+        assert not ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("a.csv"), D1), recv(D1))["noop"]
+        assert os.path.exists(lock) and _lock_free(e.wh)
+
+
+_HOLDER = """
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+from eos import store
+wh = store.Warehouse(sys.argv[2], sys.argv[3])
+with wh.writer():
+    print("locked", flush=True)
+    time.sleep(120)
+"""
+
+
+@case
+def writer_killed_while_holding_the_lock_leaves_no_stale_lock():
+    """Review P1 (stale lock): r5.5's lock file survived a hard crash and blocked every later ingestion until
+    someone deleted it by hand. A process killed while holding the writer releases it with its death."""
+    import subprocess
+    with Env() as e:
+        child = subprocess.Popen([sys.executable, "-c", _HOLDER, KIT, e.wh.root, CODEC], stdout=subprocess.PIPE,
+                                 text=True, encoding="utf-8")
+        try:
+            assert child.stdout.readline().strip() == "locked"
+            raises(store.StoreError, ingest.ingest_bhavcopy, e.wh, F.legacy(e.f("a.csv"), D1), recv(D1))
+        finally:
+            child.kill()                                  # SIGKILL / TerminateProcess: no cleanup code runs
+            child.wait(timeout=30)
+            child.stdout.close()
+        assert child.returncode != 0
+        import time
+        for _ in range(100):          # Windows frees a dead process's locks "when resources allow": wait <= 10 s
+            if _lock_free(e.wh):
+                break
+            time.sleep(0.1)
+        assert not ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("a.csv"), D1), recv(D1))["noop"]
+
+
+@case
+def raw_file_is_landed_byte_for_byte_and_parsed_from_the_landed_copy():
+    """Review P1 (raw landing): every source file's exact bytes are kept, content-addressed and write-once,
+    and a raw_file row committed with the observations names them."""
+    with Env() as e:
+        src = F.legacy(e.f("cm16SEP2026bhav.csv"), D1)
+        original = open(src, "rb").read()
+        at = at_ist(D2, "07:55")
+        ingest.ingest_bhavcopy(e.wh, src, recv(D1), source_url="https://example.invalid/cm16SEP2026bhav.csv",
+                               retrieved_at=at)
+        (raw,) = e.wh.read("raw_file")
+        assert raw["original_name"] == "cm16SEP2026bhav.csv" and raw["retrieved_at"] == at
+        assert raw["size_bytes"] == len(original) and raw["file_sha256"] == store.hashlib.sha256(original).hexdigest()
+        landed = e.wh.raw_path(raw["landed_path"])
+        assert raw["landed_path"] == f"_raw/nse_cm_bhavcopy/{raw['file_sha256']}.csv"
+        assert open(landed, "rb").read() == original
+        # the download folder changes afterwards: the landed copy and every observation are untouched
+        with open(src, "wb") as f:
+            f.write(b"overwritten")
+        assert open(landed, "rb").read() == original
+        assert {r["file_sha256"] for r in e.wh.read("price_observation") if not canary.is_canary(r["isin"])} \
+            == {raw["file_sha256"]}
+        # landing the same bytes again is a no-op; a landed file whose bytes changed is refused
+        with open(e.f("copy.csv"), "wb") as f:
+            f.write(original)
+        assert ingest.ingest_bhavcopy(e.wh, e.f("copy.csv"), recv(D1))["noop"]
+        os.chmod(landed, 0o644)
+        with open(landed, "ab") as f:
+            f.write(b"\n")
+        raises(store.IntegrityError, ingest.ingest_bhavcopy, e.wh, e.f("copy.csv"), recv(D1))
+
+
+@case
+def parsing_reads_the_landed_copy_not_the_original():
+    with Env() as e:
+        src = F.legacy(e.f("b.csv"), D1)
+        real_land = e.wh.land
+
+        def land_then_tamper(source_id, path):
+            out = real_land(source_id, path)
+            with open(path, "w", encoding="utf-8", newline="\n") as f:
+                f.write("garbage that would not parse\n")
+            return out
+        e.wh.land = land_then_tamper
+        res = ingest.ingest_bhavcopy(e.wh, src, recv(D1))
+        assert not res["noop"] and res["rows_new"] == 3
 
 
 @case
@@ -656,10 +772,10 @@ def backfill_inference_refused_for_a_same_day_file_and_after_live_capture_start(
     with Env() as e:
         _unchanged(e, lambda: raises(ingest.QualityError, ingest.ingest_bhavcopy, e.wh, F.legacy(e.f("a.csv"), D1),
                                      at_ist(D1, "23:45"), mode="backfill"))
-        p = yaml.safe_load(open(os.path.join(KIT, "policies", "source_policy.yaml")))
+        p = yaml.safe_load(open(os.path.join(KIT, "policies", "source_policy.yaml"), encoding="utf-8"))
         p["backfill"]["live_capture_start"] = D2.isoformat()
         path = e.f("sp.yaml")
-        yaml.safe_dump(p, open(path, "w"))
+        yaml.safe_dump(p, open(path, "w", encoding="utf-8", newline="\n"))
         pol = source_policy.load(path)
         ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("b1.csv"), D1), recv(D1), policy=pol)       # before: allowed
         _unchanged(e, lambda: raises(ingest.QualityError, ingest.ingest_bhavcopy, e.wh,
@@ -754,6 +870,70 @@ def parquet_codec_never_falls_back_silently():
         raises(store.StoreError, store.Warehouse, tempfile.mkdtemp(), "parquet")
 
 
+# ------------------------------------------------------------------ platform primitives (r5.6, Windows defects)
+class _WindowsOs:
+    """os as eos/fsio.py sees it during the windows-sim pass: opening a directory fails, as on Windows."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def open(self, path, flags, *a, **k):
+        if self._real.path.isdir(path):
+            raise PermissionError(13, "Permission denied: Windows cannot open a directory", path)
+        return self._real.open(path, flags, *a, **k)
+
+
+@case
+def windows_replace_uses_write_through_and_never_opens_a_directory():
+    """Review Windows defect 1: r5.5 fsync-ed the directory after every rename, which raises on Windows, so no
+    warehouse write could succeed there. Under the Windows paths every replace is MoveFileExW with
+    REPLACE_EXISTING | WRITE_THROUGH and no directory is opened. Runs on the windows-sim pass here (and is
+    trivially true on a real Windows pass, where the calls go to kernel32)."""
+    if fsio.platform() != "windows-sim":
+        return
+    fsio.SIM_KERNEL32.calls.clear()
+    with Env() as e:
+        load_days(e, [D1])
+    flags = {c[2] for c in fsio.SIM_KERNEL32.calls}
+    assert fsio.SIM_KERNEL32.calls and flags == {fsio.MOVEFILE_REPLACE_EXISTING | fsio.MOVEFILE_WRITE_THROUGH}
+    raises(AssertionError, fsio._fsync_dir, KIT)
+
+
+@case
+def windows_sharing_violation_is_retried_then_reported():
+    """An antivirus or indexer holding the target makes MoveFileExW fail with a sharing violation. A brief one
+    is retried with bounded backoff; a persistent one is an error and leaves no temp file behind."""
+    old = os.environ.get("EOS_PLATFORM")
+    os.environ["EOS_PLATFORM"] = "windows-sim"
+    delays, fsio.RETRY_DELAYS = fsio.RETRY_DELAYS, (0.0,) * len(fsio.RETRY_DELAYS)
+    try:
+        d = tempfile.mkdtemp()
+        target = os.path.join(d, "x.json")
+        fsio.SIM_KERNEL32.inject_sharing_violations = 3
+        fsio.write_durable(target, b"one", ".tmp-a")
+        assert open(target, "rb").read() == b"one" and fsio.SIM_KERNEL32.inject_sharing_violations == 0
+        fsio.SIM_KERNEL32.inject_sharing_violations = len(fsio.RETRY_DELAYS) + 1
+        raises(OSError, fsio.write_durable, target, b"two", ".tmp-b")
+        assert open(target, "rb").read() == b"one" and sorted(os.listdir(d)) == ["x.json"]
+        rmtree(d)
+    finally:
+        fsio.SIM_KERNEL32.inject_sharing_violations = 0
+        fsio.RETRY_DELAYS = delays
+        if old is None:
+            os.environ.pop("EOS_PLATFORM", None)
+        else:
+            os.environ["EOS_PLATFORM"] = old
+
+
+def platforms():
+    """Every case runs on each platform path this host can exercise: the real one, and on a POSIX host the
+    Windows paths against emulated kernel32 / msvcrt. On Windows the real Windows paths run."""
+    return ["windows"] if os.name == "nt" else ["posix", "windows-sim"]
+
+
 def run_all(require_parquet=False):
     global CODEC
     try:
@@ -762,20 +942,32 @@ def run_all(require_parquet=False):
     except ImportError:
         codecs = ["jsonl"]
     fails, runs = 0, 0
-    for CODEC in codecs:
-        print(f"--- codec: {CODEC}")
-        for t in TESTS:
-            runs += 1
-            try:
-                n_before = len(NOT_RUN)
-                t()
-                print(f"{'SKIP' if len(NOT_RUN) > n_before else 'ok  '}  {t.__name__}")
-            except Exception:
-                fails += 1
-                print(f"FAIL  {t.__name__} [{CODEC}]")
-                traceback.print_exc()
+    saved = os.environ.get("EOS_PLATFORM")
+    for plat in platforms():
+        os.environ["EOS_PLATFORM"] = plat
+        fsio.os = _WindowsOs(os) if plat == "windows-sim" else os
+        try:
+            for CODEC in codecs:
+                print(f"--- platform: {plat}, codec: {CODEC}")
+                for t in TESTS:
+                    runs += 1
+                    try:
+                        n_before = len(NOT_RUN)
+                        t()
+                        print(f"{'SKIP' if len(NOT_RUN) > n_before else 'ok  '}  {t.__name__}")
+                    except Exception:
+                        fails += 1
+                        print(f"FAIL  {t.__name__} [{plat}, {CODEC}]")
+                        traceback.print_exc()
+        finally:
+            fsio.os = os
+            if saved is None:
+                os.environ.pop("EOS_PLATFORM", None)
+            else:
+                os.environ["EOS_PLATFORM"] = saved
     CODEC = "jsonl"
-    print(f"\n{runs - fails}/{runs} passed ({len(TESTS)} cases x {len(codecs)} codec(s): {', '.join(codecs)})")
+    print(f"\n{runs - fails}/{runs} passed ({len(TESTS)} cases x {len(codecs)} codec(s): {', '.join(codecs)} x "
+          f"platform path(s): {', '.join(platforms())})")
     if "parquet" not in codecs:
         print("NOT RUN: every case on the parquet codec (pyarrow not installed)")
         if require_parquet:
@@ -790,4 +982,6 @@ def test_m2_suite():
 
 
 if __name__ == "__main__":
+    for _s in (sys.stdout, sys.stderr):   # UTF-8 output whatever the console or pipe (Windows defaults to cp1252)
+        _s.reconfigure(encoding="utf-8")
     sys.exit(1 if run_all("--require-parquet" in sys.argv) else 0)

@@ -19,6 +19,7 @@ Semantics (registry evaluation_semantics 1.0.0; Document 01 s7):
 import datetime as dt
 import decimal
 import math
+import re
 import os
 from decimal import Decimal as D
 
@@ -47,6 +48,9 @@ def parse(src):
 def load(code, reg=None, params=None, card=None):
     card = card or load_yaml(os.path.join(HERE, "strategies", f"{code}.yaml"))
     return Engine(card, reg or load_yaml(os.path.join(HERE, "registry.yaml")), params)
+
+
+NOT_GIVEN = object()
 
 
 class Env:
@@ -221,19 +225,41 @@ class Engine:
         return "UNKNOWN" if v is UNK else ("PASS" if v else "FAIL")
 
     def confidence(self, features):
-        drops = sum(1 for f in self.card["features"] if self.unknown_behaviour(f) == "penalise"
-                    and features.get(f, {"state": "missing"})["state"] != "known")
-        drops += sum(1 for f in self.card["features"] if features.get(f, {}).get("state") == "conflicted"
-                     and self.unknown_behaviour(f) == "penalise")
+        """evaluation_semantics 1.1.0: one band per card feature that is a penalised input not known OR a
+        conflicted input used in ranking - never two bands for one feature. r5.5 counted a conflicted penalised
+        input twice and missed a conflicted material ranking input (review of r5.5)."""
+        ranking = self.ranking_inputs()
+        drops = 0
+        for f in self.card["features"]:
+            state = features.get(f, {"state": "missing"})["state"]
+            if (self.unknown_behaviour(f) == "penalise" and state != "known") or (state == "conflicted" and f in ranking):
+                drops += 1
         band = BANDS[min(drops, len(BANDS) - 1)]
         return band, BANDS.index(band) <= BANDS.index(self.reg["confidence_policy"]["publish_minimum"])
 
-    def evaluate(self, features, composites=None):
+    def evaluate(self, features, composites=None, rank=NOT_GIVEN, in_candidates=True):
+        """Gates, candidacy and confidence for one security. In a rank_and_gate card pass its rank (None =
+        unrankable): an unrankable security is never a candidate (r5.6). Confidence never changes candidacy:
+        the model portfolio takes every candidate within capacity; publishable says only whether it is shown."""
         outcomes = {g["code"]: self.gate(g, features, composites) for g in self.card["gates"]}
         blocks = {g["code"]: g["unknown_blocks"] for g in self.card["gates"]}
-        candidate = all(o == "PASS" or (o == "UNKNOWN" and not blocks[c]) for c, o in outcomes.items())
+        gates_ok = all(o == "PASS" or (o == "UNKNOWN" and not blocks[c]) for c, o in outcomes.items())
+        ranked = self.card["selection_method"] != "rank_and_gate" or (rank is not NOT_GIVEN and rank is not None)
+        if self.card["selection_method"] == "rank_and_gate" and rank is NOT_GIVEN:
+            raise ValueError("a rank_and_gate card is evaluated with the security's rank (None if unrankable)")
+        candidate = in_candidates and gates_ok and ranked
+        if not in_candidates:
+            status = "filtered"
+        elif not gates_ok:
+            worst = [o for o in ("FAIL", "EXCLUDED", "UNKNOWN") if o in outcomes.values()]
+            status = {"FAIL": "failed", "EXCLUDED": "excluded", "UNKNOWN": "unknown_blocked"}[worst[0]]
+        elif not ranked:
+            status = "unrankable"
+        else:
+            status = "candidate"
         band, publishable = self.confidence(features)
-        return {"gates": outcomes, "candidate": candidate, "confidence": band, "publishable": candidate and publishable}
+        return {"gates": outcomes, "candidate": candidate, "status": status, "confidence": band,
+                "publishable": candidate and publishable}
 
     # ---------------------------------------------------------------- filters and exits
     def filter(self, expr, features):
@@ -262,28 +288,66 @@ class Engine:
         return "REVIEW" if (v is UNK or failed) else "NO"
 
     # ---------------------------------------------------------------- scoring and ranking
-    def rank_scores(self, population):
-        """population: {isin: features}. Z-scores per registry cross_sectional_scoring; composites; ranking."""
-        isins = sorted(population)
-        zs = {i: {} for i in isins}
-        wanted = {i["code"] for c in self.card.get("composites", {}).values() for i in c["inputs"]}
+    def _z_terms(self):
         rk = self.card.get("ranking", {}).get("expr", "")
-        wanted |= {t for t in self.reg["features"] if f"z({t})" in rk}
-        for f in wanted:
-            vals = [population[i].get(f, {}).get("value") if population[i].get(f, {}).get("state") == "known" else None
-                    for i in isins]
+        return {t for t in self.reg["features"] if f"z({t})" in rk}
+
+    def _used_composites(self):
+        rk = self.card.get("ranking", {}).get("expr", "")
+        return {n: c for n, c in self.card.get("composites", {}).items() if re.search(rf"\b{n}\b", rk)}
+
+    def ranking_inputs(self):
+        """Features under z() in the ranking expression, and inputs of the composites it uses."""
+        return self._z_terms() | {i["code"] for c in self._used_composites().values() for i in c["inputs"]}
+
+    def _rank_input(self, f, fs):
+        """How one ranking input resolves for one security (evaluation_semantics 1.1.0 ranking):
+        ('value', v) | ('drop', reason) | ('none', reason)."""
+        st = fs.get(f, {"state": "missing"})
+        if st["state"] in ("known", "conflicted"):
+            return "value", st["value"]
+        if st["state"] == "out_of_domain":
+            return ("none", f"{f} out_of_domain (fail)") if st.get("outcome") == "fail" else ("drop", f"{f} out_of_domain")
+        b = self.unknown_behaviour(f)
+        if b in ("fail", "exclude"):
+            return "none", f"{f} {st['state']} ({b})"
+        return "drop", f"{f} {st['state']} (penalise)"
+
+    def rank_detail(self, population):
+        """population: {isin: features}. Returns {isin: {rank, reason}}; rank None = unrankable, with the reason.
+        Z-scores (registry cross_sectional_scoring) over the known and conflicted values of the population."""
+        isins = sorted(population)
+        rk = self.card.get("ranking", {}).get("expr", "")
+        comps_def, zterms = self._used_composites(), self._z_terms()
+        resolved = {i: {f: self._rank_input(f, population[i]) for f in self.ranking_inputs()} for i in isins}
+        zs = {i: {} for i in isins}
+        for f in self.ranking_inputs():
+            vals = [float(resolved[i][f][1]) if resolved[i][f][0] == "value" else None for i in isins]
             for i, z in zip(isins, R.zscores(vals)):
                 zs[i][f] = z
         out = {}
         for i in isins:
-            comps = {}
-            for name, c in self.card.get("composites", {}).items():
+            fatal = [r for kind, r in resolved[i].values() if kind == "none"]
+            if fatal:
+                out[i] = {"rank": None, "reason": "; ".join(sorted(fatal))}
+                continue
+            comps, reason = {}, None
+            for name, c in comps_def.items():
                 got = [(-1 if inp["direction"] == "lower_better" else 1) * zs[i][inp["code"]]
                        for inp in c["inputs"] if zs[i].get(inp["code"]) is not None]
                 comps[name] = sum(got) / len(got) if len(got) >= c["min_inputs_known"] else None
+                if comps[name] is None and reason is None:
+                    reason = f"{name}: {len(got)} of {len(c['inputs'])} inputs, needs {c['min_inputs_known']}"
+            missing_z = sorted(f for f in zterms if zs[i].get(f) is None)
+            if missing_z and reason is None:
+                reason = "no z-score for " + ", ".join(missing_z)
             v = self.ev(parse(rk), Env(population[i], composites=comps, zs=zs[i])) if rk else UNK
-            out[i] = None if v is UNK else v
+            out[i] = {"rank": None, "reason": reason or "ranking expression unknown"} if v is UNK else \
+                {"rank": v, "reason": None}
         return out
+
+    def rank_scores(self, population):
+        return {i: d["rank"] for i, d in self.rank_detail(population).items()}
 
     # ---------------------------------------------------------------- sizing, quantities, tranches, stop
     def quantities(self, runtime, prices, features=None):
@@ -356,14 +420,17 @@ class Engine:
 
 # ---------------------------------------------------------------- construction and scale (audit A3)
 def construct(candidates, held, max_positions, cash, tol=1e-9):
-    """Model-portfolio capacity per card construction (capacity_order: rank). candidates: [{isin, rank (None =
-    missing), market_cap, target_value}]. Existing positions are never displaced. New claims are taken in rank
-    order (missing ranks last; ranks within tol tie and break on higher market cap, then ISIN) while a slot and
-    spendable cash remain; each is sized min(target_value, cash). Returns (taken, not_taken)."""
-    ranked = [c for c in candidates if c["rank"] is not None]
+    """Model-portfolio capacity per card construction (capacity_order: rank). candidates: [{isin, rank,
+    market_cap, target_value}]. Existing positions are never displaced. New claims are taken in rank order (ranks
+    within tol tie and break on higher market cap, then ISIN) while a slot and spendable cash remain; each is
+    sized min(target_value, cash). Returns (taken, not_taken). An unrankable security is not a candidate
+    (evaluation_semantics 1.1.0): r5.5 admitted it after the ranked claims, so with spare capacity a security the
+    card could not score entered the model portfolio. Passing one here is a caller error."""
+    unrankable = sorted(c["isin"] for c in candidates if c["rank"] is None)
+    if unrankable:
+        raise ValueError(f"unrankable securities are not candidates: {unrankable}")
     order = [r for r in R.rank_order([{"isin": c["isin"], "score": float(c["rank"]), "market_cap": c["market_cap"]}
-                                      for c in ranked], tol)]
-    order += [c["isin"] for c in sorted((c for c in candidates if c["rank"] is None), key=lambda c: (-c["market_cap"], c["isin"]))]
+                                      for c in candidates], tol)]
     by = {c["isin"]: c for c in candidates}
     slots, taken, rest = max_positions - len(held), [], []
     for i in order:
@@ -385,13 +452,95 @@ def actual_target(target_value, notional_capital, total_capital, headroom):
     return min(D(str(target_value)) / D(str(notional_capital)) * D(str(total_capital)), D(str(headroom)))
 
 
-def weekly_sessions(calendar, weekday):
-    """calendar: [(date, is_executable)] - muhurat and holidays are not executable. One session per ISO week:
-    the last executable session on or before the named weekday; weeks with none are skipped."""
-    wd = ["mon", "tue", "wed", "thu", "fri"].index(weekday)
+def executable(session_type, reg):
+    """registry session_policy: only these session types are evaluated, executed and counted as units."""
+    if session_type not in reg["enums"]["session_type"]:
+        raise ValueError(f"unknown session_type {session_type!r}")
+    return session_type in reg["session_policy"]["executable_session_types"]
+
+
+def weekly_sessions(calendar, weekday, reg):
+    """calendar: [(date, session_type)] as in trading_calendar. One session per ISO week: the last executable
+    session (session_policy: a muhurat session trades but is not executable) on or before the named weekday;
+    weeks with none are skipped."""
+    wd = reg["enums"]["weekday"].index(weekday)
     weeks = {}
-    for d, ok in calendar:
-        if ok and d.weekday() <= wd:
+    for d, st in calendar:
+        if executable(st, reg) and d.weekday() <= wd:
             key = d.isocalendar()[:2]
             weeks[key] = max(weeks.get(key, d), d)
     return sorted(weeks.values())
+
+
+# ---------------------------------------------------------------- one evaluation, universe to published claims (r5.6)
+def run_pipeline(card, reg, params, population, held=(), cash=None, max_positions=None):
+    """One rank_and_gate evaluation of one card, end to end, as Doc 01 s7-s9 order it (review of r5.5: r5.5 had
+    goldens for each stage but none for the chain, so a population could pass every unit case and still produce
+    the wrong claims). population: {isin: {"features": {...}, "sector": code, "market_eligible": bool,
+    "market_cap": number, "close": signal-date close}}. Returns {isin: record} and the model portfolio's entries.
+
+      1. universe       market-eligible and not in the card's excluded sectors, else not_in_universe
+      2. filters        FALSE -> filtered (out of candidates and scoring population); UNKNOWN -> filter_unknown
+                        (out of candidates, still scored)
+      3. ranking        rank_detail over the scoring population (evaluation_semantics.ranking)
+      4. gates          evaluate(): failed / excluded / unknown_blocked / unrankable / candidate, and confidence
+      5. size checks    at model size (target_value from the card's sizing): a failure is size_check_failed
+      6. capacity       construct(): held positions first, then rank order, while a slot and cash remain;
+                        a candidate not taken is no_capacity
+      7. quantities     through the card, with the model's hard_cap_value = min(notional_capital x
+                        max_position_pct, the cash construct allotted), so the worst permitted fill never
+                        overdraws the model's cash
+      8. publication    a taken claim is published when its confidence is at least publish_minimum; below it,
+                        the claim is recorded and the model portfolio still holds it
+    """
+    e = Engine(card, reg, params)
+    p = e.params
+    universe = {i: s for i, s in population.items()
+                if s["market_eligible"] and s["sector"] not in card["universe"]["exclude_sectors"]}
+    out = {i: {"status": "not_in_universe"} for i in population if i not in universe}
+    member = {i: e.filter_membership(s["features"]) for i, s in universe.items()}
+    scoring = {i: universe[i]["features"] for i, (_, scored) in member.items() if scored}
+    ranks = e.rank_detail(scoring) if card["selection_method"] == "rank_and_gate" else {}
+    candidates = []
+    for i, s in sorted(universe.items()):
+        in_cand, scored = member[i]
+        if not scored:
+            out[i] = {"status": "filtered"}
+            continue
+        r = e.evaluate(s["features"], rank=ranks.get(i, {}).get("rank"), in_candidates=in_cand)
+        rec = {"status": "filter_unknown" if r["status"] == "filtered" else r["status"], "gates": r["gates"],
+               "confidence": r["confidence"], "rank": ranks.get(i, {}).get("rank"),
+               "rank_reason": ranks.get(i, {}).get("reason")}
+        out[i] = rec
+        if not r["candidate"]:
+            continue
+        runtime = {"hard_cap_value": num(p["notional_capital"]) * num(p["max_position_pct"])}
+        if "atr_pct_20" in s["features"]:
+            runtime["atr_pct_at_signal"] = num(s["features"]["atr_pct_20"]["value"])
+        env = Env(s["features"], runtime=runtime)
+        target_value = e.ev(parse(card["sizing"]["formula"]), env)
+        checks = e.size_checks(s["features"], target_value / D(10) ** 7)
+        if any(v != "PASS" for v in checks.values()):
+            rec.update(status="size_check_failed", size_checks=checks)
+            continue
+        rec.update(target_value=target_value, publishable=r["publishable"])
+        candidates.append({"isin": i, "rank": rec["rank"], "market_cap": s["market_cap"], "target_value": target_value,
+                           "runtime": runtime})
+    taken, _ = construct(candidates, set(held), max_positions, D(str(cash)))
+    by = {c["isin"]: c for c in candidates}
+    for c in candidates:
+        out[c["isin"]]["status"] = "no_capacity"
+        out[c["isin"]]["model_publishable"] = out[c["isin"]].pop("publishable")
+    entries = []
+    for i, allotted in taken:
+        c = by[i]
+        runtime = dict(c["runtime"], target_value=allotted, hard_cap_value=min(c["runtime"]["hard_cap_value"], allotted))
+        prices = {("close", "signal_date"): population[i]["close"]}
+        q = e.quantities(runtime, prices, population[i]["features"])
+        rec = out[i]
+        rec.update(status="taken", allotted=float(allotted), target_qty=q["target_qty"])
+        if len(card["proposed_execution_rule"]["tranches"]) > 1:
+            rec["tranche_1_qty"] = e.tranche_quantities(runtime, prices)["quantities"][0]
+        rec["published"] = bool(rec.pop("model_publishable"))
+        entries.append([i, q["target_qty"]])
+    return out, entries

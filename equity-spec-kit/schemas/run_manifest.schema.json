@@ -226,6 +226,13 @@
   "holdout_ledger_entry_id": {
    "type": "string"
   },
+  "price_read_contract": {
+   "enum": [
+    "exact_per_decision",
+    "first_known_panel"
+   ],
+   "description": "How a multi-date run read prices (Document 02 s6). exact_per_decision: history_known_as_of(E) for every decision date E - the evidential standard, and the only contract a sealed holdout evaluation may use. first_known_panel: point_in_time_panel + panel_as_of - look-ahead-free but information-poorer (it ignores corrections a decision could have known), so its results are labelled as such and never used as promotion evidence."
+  },
   "evaluation_semantics_version": {
    "type": "string",
    "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
@@ -264,6 +271,48 @@
    "then": {
     "required": [
      "holdout_ledger_entry_id"
+    ]
+   }
+  },
+  {
+   "if": {
+    "properties": {
+     "run_type": {
+      "enum": [
+       "backtest",
+       "replay"
+      ]
+     }
+    },
+    "required": [
+     "run_type"
+    ]
+   },
+   "then": {
+    "required": [
+     "price_read_contract"
+    ]
+   }
+  },
+  {
+   "if": {
+    "properties": {
+     "holdout_access": {
+      "const": "sealed_evaluation"
+     }
+    },
+    "required": [
+     "holdout_access"
+    ]
+   },
+   "then": {
+    "properties": {
+     "price_read_contract": {
+      "const": "exact_per_decision"
+     }
+    },
+    "required": [
+     "price_read_contract"
     ]
    }
   }

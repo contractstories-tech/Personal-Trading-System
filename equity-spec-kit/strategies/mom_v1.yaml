@@ -1,9 +1,9 @@
 schema_version: 6
 code: mom_v1
 strategy_class: momentum
-version: 1.0.0-prevalidation.8
+version: 1.0.0-prevalidation.9
 lineage: {code: mom, derived_from: []}
-registry: {version: 3.0.0, closure_sha256: 2c87863e44a1ef89ce0e60c59d4ab3ba40b6f116adc3b41066683d22d605eaef}
+registry: {version: 3.1.0, closure_sha256: 9ab85c0f695ebc6f891c5b0f6e2b5e2be1b46f3788c8cb9c9ff189217f1a0679}
 
 hypothesis: >
   Cross-sectional relative strength persists over 3 to 12 month horizons

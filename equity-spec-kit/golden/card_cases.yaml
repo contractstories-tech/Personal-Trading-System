@@ -48,6 +48,14 @@ filters:
 confidence:
   - {id: C20, card: ltqv_v1, doc: "one penalised secondary input missing: high -> medium, still publishable", missing: [roce_stability], expect: [medium, true]}
   - {id: C20b, card: ltqv_v1, doc: "two missing: low, recorded but never shown", missing: [roce_stability, ev_ebitda_vs_sector], expect: [low, false]}
+  - {id: C20c, card: ltqv_v1, doc: "r5.6: a penalised input that is ALSO conflicted and used in ranking lowers one band, not two (r5.5 gave low)",
+     conflicted: [roce_stability], expect: [medium, true]}
+  - {id: C20d, card: mom_v1, doc: "r5.6: a conflicted MATERIAL ranking input lowers one band (r5.5 ignored it because it is not penalised)",
+     conflicted: [vol_adj_mom_6m], expect: [medium, true]}
+  - {id: C20e, card: mom_v1, doc: "a conflicted input NOT used in ranking lowers nothing (it is non-known in its gate, where its unknown behaviour decides)",
+     conflicted: [adv_20d_cr], expect: [high, true]}
+  - {id: C20f, card: ltqv_v1, doc: "three bands down: one missing penalised input, one conflicted penalised ranking input, one conflicted material ranking input",
+     missing: [roce_stability], conflicted: [ev_ebitda_vs_sector, roce_5y_trend], expect: [insufficient, false]}
 
 stops:
   - {id: C21, card: mom_v1, doc: "G10's path through the CARD's own stop expressions (2.5 x ATR): same stops, exit on session 6",
@@ -76,11 +84,15 @@ size_checks:
   - {id: C24b, card: mom_v1, doc: "S1 re-checked at the ACTUAL size 1.0 cr: 0.0010 + 0.02 x 0.2 = 0.005 > 0.0035 -> FAIL (valid but not currently actionable)", features: {adv_20d_cr: 25}, provisional_value_cr: 1.0, expect: {S1: FAIL, S2: PASS}}
 
 construction:
-  - {id: C25, doc: "max 3 positions, one already held; 4 new claims ranked 0.9, 0.5, 0.7, missing -> the two best ranks take the two free slots",
+  - {id: C25, doc: "max 3 positions, one already held; 3 new claims ranked 0.9, 0.5, 0.7 -> the two best ranks take the two free slots",
      held: [INE0H], max_positions: 3, cash: 1000000,
      candidates: [{isin: INE0A, rank: 0.9, market_cap: 100, target_value: 200000}, {isin: INE0B, rank: 0.5, market_cap: 900, target_value: 200000},
-                  {isin: INE0C, rank: 0.7, market_cap: 50, target_value: 200000}, {isin: INE0D, rank: null, market_cap: 9999, target_value: 200000}],
-     expect: {taken: [[INE0A, 200000], [INE0C, 200000]], not_taken: [INE0B, INE0D]}}
+                  {isin: INE0C, rank: 0.7, market_cap: 50, target_value: 200000}],
+     expect: {taken: [[INE0A, 200000], [INE0C, 200000]], not_taken: [INE0B]}}
+  - {id: C25c, doc: "r5.6: an unrankable security is not a candidate; r5.5 admitted it after the ranked claims whenever capacity was spare",
+     held: [], max_positions: 5, cash: 1000000,
+     candidates: [{isin: INE0A, rank: 0.9, market_cap: 100, target_value: 200000}, {isin: INE0D, rank: null, market_cap: 9999, target_value: 200000}],
+     expect: {error: "unrankable securities are not candidates: ['INE0D']"}}
   - {id: C25b, doc: "cash runs out: the second claim is sized to the remaining 50,000", held: [], max_positions: 5, cash: 250000,
      candidates: [{isin: INE0A, rank: 0.9, market_cap: 100, target_value: 200000}, {isin: INE0B, rank: 0.8, market_cap: 100, target_value: 200000},
                   {isin: INE0C, rank: 0.7, market_cap: 100, target_value: 200000}],
@@ -92,11 +104,46 @@ scale:
 
 weekly:
   - {id: C27, doc: "Friday 2 Oct 2026 is a holiday: that week's weekly session is Thursday 1 Oct",
-     calendar: [[2026-09-28, true], [2026-09-29, true], [2026-09-30, true], [2026-10-01, true], [2026-10-02, false],
-                [2026-10-05, true], [2026-10-06, true], [2026-10-07, true], [2026-10-08, true], [2026-10-09, true]],
+     calendar: [[2026-09-28, normal], [2026-09-29, normal], [2026-09-30, normal], [2026-10-01, normal], [2026-10-02, holiday],
+                [2026-10-05, normal], [2026-10-06, normal], [2026-10-07, normal], [2026-10-08, normal], [2026-10-09, normal]],
      weekday: fri, expect: [2026-10-01, 2026-10-09]}
-  - {id: C27b, doc: "a muhurat Friday is not executable: Thursday is used", calendar: [[2026-11-05, true], [2026-11-06, false]], weekday: fri, expect: [2026-11-05]}
+  - {id: C27b, doc: "a muhurat Friday is a real trading session but not executable (session_policy v1): Thursday is used",
+     calendar: [[2026-11-05, normal], [2026-11-06, muhurat]], weekday: fri, expect: [2026-11-05]}
+  - {id: C27c, doc: "a week whose only session before Friday is muhurat, with Friday a holiday, has no weekly session",
+     calendar: [[2026-11-12, muhurat], [2026-11-13, holiday], [2026-11-16, normal], [2026-11-20, normal]], weekday: fri, expect: [2026-11-20]}
+  - {id: C27d, doc: "a special pre-open session is not executable either", calendar: [[2026-11-19, normal], [2026-11-20, special_preopen]], weekday: fri, expect: [2026-11-19]}
 
 ranking:
   - {id: C28, card: mom_v1, doc: "30 names: 12-month vol-adjusted momentum 1..30, 6-month 30..1, so z(6m) = -z(12m) and rank = 0.60 z - 0.40 z = 0.20 z(12m): S30, S29, S28 first. The weights matter (reversed weights reverse the order); a name with no inputs ranks missing",
      population: {n: 30}, expect_top3: [S30, S29, S28]}
+
+# r5.6 (review of r5.5): how each ranking input resolves, and what an unrankable security becomes.
+# Population: names S01..Sn (n = 32, above min_contributors 30 when one name drops out); every ranking input of name Si is i (known) unless overridden.
+ranking_states:
+  - {id: C29, card: mom_v1, doc: "vol_adj_mom_6m (material, ranking-only) missing: S05 is unrankable - r5.5 ranked nothing for it but construct admitted it last",
+     n: 32, overrides: {S05: {vol_adj_mom_6m: {state: missing}}}, expect: {S05: null, S06: ranked}, reason: {S05: "vol_adj_mom_6m missing (exclude)"}}
+  - {id: C29b, card: mom_v1, doc: "a conflicted input ranks with its primary value: S05 with 6m conflicted at 30 ranks exactly where a known 30 would",
+     n: 32, overrides: {S05: {vol_adj_mom_6m: {state: conflicted, value: 30}}}, expect_equal_rank: [S05, S05_known_twin]}
+  - {id: C29c, card: ltqv_v1, doc: "roce_5y_trend (material, ranking-only quality input) missing: unrankable by its exclude behaviour (r5.5 ranked it from the other 4); the others still rank",
+     n: 32, overrides: {S07: {roce_5y_trend: {state: missing}}}, expect: {S07: null, S08: ranked}, reason: {S07: "roce_5y_trend missing (exclude)"}}
+  - {id: C29d, card: ltqv_v1, doc: "one penalised consistency input missing: still ranked (2 of 3 >= min 2)",
+     n: 32, overrides: {S07: {roce_stability: {state: missing}}}, expect: {S07: ranked}}
+  - {id: C29e, card: ltqv_v1, doc: "two penalised consistency inputs missing: consistency composite below 2 of 3, unrankable",
+     n: 32, overrides: {S07: {roce_stability: {state: missing}, exceptional_frequency: {state: missing}}}, expect: {S07: null},
+     reason: {S07: "consistency_composite: 1 of 3 inputs, needs 2"}}
+  - {id: C29f, card: ltqv_v1, doc: "ey_vs_own_5y_median out_of_domain with outcome drop is left out of value_composite like a penalised input (2 of 3 remain)",
+     n: 32, overrides: {S07: {ey_vs_own_5y_median: {state: out_of_domain, outcome: drop}}}, expect: {S07: ranked}}
+  - {id: C29g, card: ltqv_v1, doc: "debt_equity stale (material, exclude): unrankable whatever the other inputs",
+     n: 32, overrides: {S07: {debt_equity: {state: stale}}}, expect: {S07: null}, reason: {S07: "debt_equity stale (exclude)"}}
+
+evaluate:
+  - {id: C30, card: mom_v1, doc: "every gate passes but the security is unrankable: not a candidate, status unrankable",
+     rank: null, features: {adv_20d_cr: 30, price_vs_dma200: 1.2, price_vs_dma50: 1.1, ret_12m_skip_1m: 0.4, vol_adj_mom_12m: 0.9,
+                            rel_strength_6m_vs_nifty200_tri: 0.1, delivery_pct_20d_avg: 0.5, is_fno_eligible: true,
+                            surveillance_stage: {state: known, value: none}},
+     params: {band_fno: 0.25, band_cash: 0.45}, expect: {candidate: false, status: unrankable}}
+  - {id: C30b, card: mom_v1, doc: "the same security with a rank is a candidate",
+     rank: 0.3, features: {adv_20d_cr: 30, price_vs_dma200: 1.2, price_vs_dma50: 1.1, ret_12m_skip_1m: 0.4, vol_adj_mom_12m: 0.9,
+                           rel_strength_6m_vs_nifty200_tri: 0.1, delivery_pct_20d_avg: 0.5, is_fno_eligible: true,
+                           surveillance_stage: {state: known, value: none}},
+     params: {band_fno: 0.25, band_cash: 0.45}, expect: {candidate: true, status: candidate}}

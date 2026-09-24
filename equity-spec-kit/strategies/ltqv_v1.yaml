@@ -1,9 +1,9 @@
 schema_version: 6
 code: ltqv_v1
 strategy_class: fundamental_long_term
-version: 1.0.0-prevalidation.8
+version: 1.0.0-prevalidation.9
 lineage: {code: ltqv, derived_from: []}
-registry: {version: 3.0.0, closure_sha256: 48d0ce47e8061018039d278017f1785571fac1867bcc9449dd711bda53d294ba}
+registry: {version: 3.1.0, closure_sha256: 960667f3e567f378c5a45f091081f02736aafc886ae2d1e15293b0e1ce295d7e}
 
 hypothesis: >
   Businesses that earn high and stable returns on capital, convert profits
@@ -72,7 +72,7 @@ composites:
       - {code: cfo_pat_3y,        direction: higher_better}
       - {code: debt_equity,       direction: lower_better}
       - {code: interest_coverage, direction: higher_better}
-    min_inputs_known: 4
+    min_inputs_known: 5          # every input is material (r5.6: a composite may tolerate missing secondary inputs only)
   value_composite:
     inputs:
       - {code: ey_vs_own_5y_median,   direction: higher_better}

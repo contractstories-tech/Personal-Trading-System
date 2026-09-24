@@ -13,9 +13,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import reference_sim as R  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-G = yaml.safe_load(open(os.path.join(HERE, "golden", "golden_cases.yaml")))
-COSTS = yaml.safe_load(open(os.path.join(HERE, "schedules", "costs_india_equity_delivery.yaml")))
-TAX = yaml.safe_load(open(os.path.join(HERE, "schedules", "tax_india_listed_equity.yaml")))
+G = yaml.safe_load(open(os.path.join(HERE, "golden", "golden_cases.yaml"), encoding="utf-8"))
+COSTS = yaml.safe_load(open(os.path.join(HERE, "schedules", "costs_india_equity_delivery.yaml"), encoding="utf-8"))
+TAX = yaml.safe_load(open(os.path.join(HERE, "schedules", "tax_india_listed_equity.yaml"), encoding="utf-8"))
 
 
 def close(a, b, tol=1e-6):
@@ -446,6 +446,8 @@ def test_golden_cases_have_teeth():
 
 
 if __name__ == "__main__":
+    for _s in (sys.stdout, sys.stderr):   # UTF-8 output whatever the console or pipe (Windows defaults to cp1252)
+        _s.reconfigure(encoding="utf-8")
     fails = run()
     print("\nplanted defects:")
     survivors = check_teeth()

@@ -8,7 +8,8 @@ Run either way:
 Each case mutates a known-good card and asserts the linter FAILS it with a violation that
 contains the expected fragment, so a case cannot pass by accident on an unrelated error.
 """
-import copy, hashlib, io, json, os, sys
+import copy
+import shutil, hashlib, io, json, os, sys
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -18,7 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REG_PATH = os.path.join(HERE, "registry.yaml")
 REG = load_yaml(REG_PATH)
 REG_SHA = sha256_file(REG_PATH)
-SCHEMA = json.load(open(os.path.join(HERE, "schemas", "card.schema.json")))
+SCHEMA = json.load(open(os.path.join(HERE, "schemas", "card.schema.json"), encoding="utf-8"))
 A = load_yaml(os.path.join(HERE, "strategies", "ltqv_v1.yaml"))
 B = load_yaml(os.path.join(HERE, "strategies", "mom_v1.yaml"))
 
@@ -222,6 +223,7 @@ def run(verbose=True):
              ("duplicate strategy code across cards rejected", _dup_code_rejected()),
              ("A4 unrelated registry edits leave card pins intact; used-entry edits break them", _closure_is_scoped()),
              ("B7 lifecycle records validate, chain, and give each card its status", _lifecycle_records()),
+             ("register_card.py stamps the real time and refuses a future or offset-less --at", _register_card_refuses_bad_times()),
              ("real card ltqv_v1 passes", not lint(A, REG, SCHEMA)),
              ("real card mom_v1 passes", not lint(B, REG, SCHEMA))]
     for name, ok in extra:
@@ -249,37 +251,112 @@ def _placeholder_blocked():
 
 def _closure_is_scoped():
     """Audit A4: r5.4 pinned the whole registry file, so any edit re-versioned every card and, under the
-    'changed card needs fresh holdout' rule, would have burned every holdout."""
+    'changed card needs fresh holdout' rule, would have burned every holdout. Review of r5.5: the closure still
+    held every field enum and valuation_transformative_actions, so adding a weekday re-pinned both cards."""
+    same = lambda reg, card: closure_sha256(card, reg) == closure_sha256(card, REG)  # noqa: E731
     reg = copy.deepcopy(REG)
     reg["features"]["brand_new_swing_feature"] = {"version": "1.0.0", "type": "num", "series": "raw", "cadence": "daily",
                                                   "default_unknown": "exclude", "formula": "for another strategy"}
     reg["sector_codes"].append("space_tourism")
     reg["deprecated"].append("some_old_name")
-    unrelated_ok = closure_sha256(A, reg) == closure_sha256(A, REG) and closure_sha256(B, reg) == closure_sha256(B, REG)
+    unrelated_ok = same(reg, A) and same(reg, B)
     reg2 = copy.deepcopy(REG)
     reg2["features"]["roce_3y_avg"]["formula"] += " (edited)"
-    ltqv_breaks = closure_sha256(A, reg2) != closure_sha256(A, REG)
-    mom_unaffected = closure_sha256(B, reg2) == closure_sha256(B, REG)
+    ltqv_only = not same(reg2, A) and same(reg2, B)
     reg3 = copy.deepcopy(REG)
     reg3["evaluation_semantics"]["exits"] += " (edited)"
-    semantics_break_both = closure_sha256(A, reg3) != closure_sha256(A, REG) and closure_sha256(B, reg3) != closure_sha256(B, REG)
-    return unrelated_ok and ltqv_breaks and mom_unaffected and semantics_break_both
+    semantics_break_both = not same(reg3, A) and not same(reg3, B)
+    # field-value enums: a new value cannot change what an existing card means
+    reg4 = copy.deepcopy(REG)
+    reg4["enums"]["weekday"].append("sat")
+    reg4["enums"]["horizon"].append("decades")
+    reg4["enums"]["status"].append("archived")
+    field_enums_ok = same(reg4, A) and same(reg4, B)
+    # a block read by one card's feature (ey_median_5y depends_on valuation_transformative_actions)
+    reg5 = copy.deepcopy(REG)
+    reg5["valuation_transformative_actions"]["actions"].append("rights_issue")
+    vta_ltqv_only = not same(reg5, A) and same(reg5, B)
+    # an enum both cards compare against (surveillance_stage.none) changes both
+    reg6 = copy.deepcopy(REG)
+    reg6["enums"]["surveillance_stage"].append("esm_stage_1")
+    stage_both = not same(reg6, A) and not same(reg6, B)
+    # scoring rules reach ranking cards only; muhurat policy reaches every card
+    reg7 = copy.deepcopy(REG)
+    reg7["cross_sectional_scoring"]["min_contributors"] = 40
+    gate_only = copy.deepcopy(B)
+    gate_only["selection_method"], gate_only["ranking"] = "gate_only", None
+    del gate_only["ranking"]
+    scoring_scoped = not same(reg7, A) and not same(reg7, B) and same(reg7, gate_only)
+    reg8 = copy.deepcopy(REG)
+    reg8["session_policy"]["executable_session_types"].append("muhurat")
+    session_both = not same(reg8, A) and not same(reg8, B)
+    checks = dict(unrelated_ok=unrelated_ok, ltqv_only=ltqv_only, semantics_break_both=semantics_break_both,
+                  field_enums_ok=field_enums_ok, vta_ltqv_only=vta_ltqv_only, stage_both=stage_both,
+                  scoring_scoped=scoring_scoped, session_both=session_both)
+    if not all(checks.values()):
+        print("   closure scope:", {k: v for k, v in checks.items() if not v})
+    return all(checks.values())
+
+
+def _rec(n, at, frm="none", to="experimental", code="mom_v1", sha="a" * 64):
+    return {"transition_id": f"{n:04d}", "strategy_code": code, "lineage": "mom", "card_sha256": sha,
+            "from_status": frm, "to_status": to, "decided_by": "t", "decided_at": at, "reason": "regression case",
+            "evidence": {}, "_file": f"{n:04d}-{code}.json"}
 
 
 def _lifecycle_records():
-    import tempfile
+    """B7 and the review of r5.5: records order by the instant decided, not the string; ties, future times,
+    missing offsets and out-of-file-order records are reported; the shipped records give each card its status."""
+    import datetime as _dt
     from speclint import load_transitions, lifecycle_status
     recs, errs = load_transitions(os.path.join(HERE, "lifecycle"))
     if errs:
         print("   lifecycle record errors:", errs[:3])
         return False
-    shipped = all(lifecycle_status(c, sha256_file(os.path.join(HERE, "strategies", f"{c}.yaml")), recs)[0] == "experimental"
-                  for c in ("ltqv_v1", "mom_v1"))
-    # a broken chain is reported: experimental -> shadow for a card never registered as experimental
-    bad = [dict(recs[0], transition_id="x", from_status="experimental", to_status="shadow",
-                decided_at="2026-09-01T10:00:00+05:30", _file="x.json")]
-    chain_caught = bool(lifecycle_status(recs[0]["strategy_code"], recs[0]["card_sha256"], bad)[2])
-    return shipped and chain_caught
+    shipped = all(lifecycle_status(c, sha256_file(os.path.join(HERE, "strategies", f"{c}.yaml")), recs)[0:3:2] ==
+                  ("experimental", []) for c in ("ltqv_v1", "mom_v1"))
+    now = _dt.datetime(2026, 9, 24, 14, 0, tzinfo=_dt.timezone.utc)
+    st = lambda rs: lifecycle_status("mom_v1", "a" * 64, rs, now=now)  # noqa: E731
+    # 18:00+05:30 is 12:30Z, BEFORE 13:00Z although its string sorts after: the chain is none->experimental->shadow
+    mixed = [_rec(1, "2026-09-24T18:00:00+05:30"), _rec(2, "2026-09-24T13:00:00Z", "experimental", "shadow")]
+    by_instant = st(mixed)[0] == "shadow" and st(mixed)[2] == []
+    # string order would have put 0002 first and reported a broken chain; the reverse filing is itself reported
+    swapped = [_rec(1, "2026-09-24T13:00:00Z"), _rec(2, "2026-09-24T18:00:00+05:30", "experimental", "shadow")]
+    misfiled = any("filed before" in p for p in st(swapped)[2])
+    tie = any("same instant" in p for p in st([_rec(1, "2026-09-24T13:00:00Z"),
+                                               _rec(2, "2026-09-24T18:30:00+05:30", "experimental", "shadow")])[2])
+    future = any("future" in p for p in st([_rec(1, "2026-09-24T14:06:00Z")])[2])
+    near_now_ok = st([_rec(1, "2026-09-24T14:04:00Z")])[2] == []
+    naive = any("offset" in p for p in st([_rec(1, "2026-09-24T13:00:00")])[2])
+    broken = bool(st([_rec(1, "2026-09-01T10:00:00+05:30", "experimental", "shadow")])[2])
+    checks = dict(shipped=shipped, by_instant=by_instant, misfiled=misfiled, tie=tie, future=future,
+                  near_now_ok=near_now_ok, naive=naive, broken=broken)
+    if not all(checks.values()):
+        print("   lifecycle:", {k: v for k, v in checks.items() if not v})
+    return all(checks.values())
+
+
+def _register_card_refuses_bad_times():
+    """register_card.py stamps the real time by default and refuses a future or offset-less --at."""
+    import subprocess
+    import tempfile
+    d = tempfile.mkdtemp()
+    try:
+        k = os.path.join(d, "k")
+        shutil.copytree(HERE, k, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", "run_all.log"))
+        os.makedirs(os.path.join(k, "lifecycle", "transitions"), exist_ok=True)
+        for f in os.listdir(os.path.join(k, "lifecycle", "transitions")):
+            os.remove(os.path.join(k, "lifecycle", "transitions", f))
+        run = lambda *extra: subprocess.run([sys.executable, "register_card.py", "strategies/mom_v1.yaml", "--by", "t",  # noqa: E731
+                                             "--reason", "regression case"] + list(extra), cwd=k, capture_output=True,
+                                            text=True, encoding="utf-8")
+        future = run("--at", "2099-01-01T10:00:00+05:30")
+        naive = run("--at", "2026-09-24T10:00:00")
+        ok = run()
+        recs = os.listdir(os.path.join(k, "lifecycle", "transitions"))
+        return future.returncode != 0 and naive.returncode != 0 and ok.returncode == 0 and len(recs) == 1
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def _formats_are_real():
@@ -296,7 +373,7 @@ def _formats_are_real():
 def _other_schemas_enforce_their_rules():
     """The lifecycle, portfolio and run-manifest schemas must reject what their prose forbids."""
     import datetime as _dt
-    sch = lambda n: json.load(open(os.path.join(HERE, "schemas", n)))
+    sch = lambda n: json.load(open(os.path.join(HERE, "schemas", n), encoding="utf-8"))
     from speclint import schema_errors
     h, ts = "a" * 64, "2026-09-21T20:00:00+05:30"
     life = sch("strategy_lifecycle_transition.schema.json")
@@ -326,7 +403,7 @@ def _other_schemas_enforce_their_rules():
          bool(schema_errors({**base, "from_status": "production", "to_status": "suspended", "evidence": {}}, life, life))),
     ]
     pol = sch("portfolio_policy.schema.json")
-    p = yaml.safe_load(open(os.path.join(HERE, "portfolio_policy.yaml")))
+    p = yaml.safe_load(open(os.path.join(HERE, "portfolio_policy.yaml"), encoding="utf-8"))
     p2 = copy.deepcopy(p); p2["caps"]["per_stock_pct"] = 5.0
     p3 = copy.deepcopy(p); p3["caps"]["max_open_positions"] = 1.5
     p4 = copy.deepcopy(p); p4["slot_priority"] = ["earliest_signal", "earliest_signal"]
@@ -348,14 +425,22 @@ def _other_schemas_enforce_their_rules():
               "simulator_sha256": h, "code_commit": "abc1234", "container_image_digest": "sha256:" + h,
               "dependency_lock_sha256": h,
               "engine_settings": {"threads": 1, "aggregation_order": "isin_then_date", "tie_tolerance": 1e-9},
-              "portfolio_policy_sha256": h, "created_at": ts, "holdout_access": "none", "random_seed": 7}
+              "portfolio_policy_sha256": h, "created_at": ts, "holdout_access": "none", "random_seed": 7,
+              "price_read_contract": "first_known_panel"}
     checks += [("a complete backtest manifest is accepted", not schema_errors(ok_run, run, run)),
                ("'not-a-date' rejected", bool(schema_errors({**ok_run, "created_at": "yesterday-ish"}, run, run))),
                ("empty feature_build rejected", bool(schema_errors({**ok_run, "feature_build": {}}, run, run))),
                ("backtest without holdout_access rejected",
                 bool(schema_errors({k: v for k, v in ok_run.items() if k != "holdout_access"}, run, run))),
                ("sealed holdout without a ledger entry rejected",
-                bool(schema_errors({**ok_run, "holdout_access": "sealed_evaluation"}, run, run)))]
+                bool(schema_errors({**ok_run, "holdout_access": "sealed_evaluation"}, run, run))),
+               ("backtest without a price_read_contract rejected (r5.6)",
+                bool(schema_errors({k: v for k, v in ok_run.items() if k != "price_read_contract"}, run, run))),
+               ("sealed holdout on the first-known panel rejected (r5.6)",
+                bool(schema_errors({**ok_run, "holdout_access": "sealed_evaluation", "holdout_ledger_entry_id": "e1"}, run, run))),
+               ("sealed holdout on exact per-decision reads accepted",
+                not schema_errors({**ok_run, "holdout_access": "sealed_evaluation", "holdout_ledger_entry_id": "e1",
+                                   "price_read_contract": "exact_per_decision"}, run, run))]
     led = sch("holdout_ledger.schema.json")
     entry = {"entry_id": "e1", "card_version": "1", "card_sha256": h, "exposed_from": "2020-01-01",
              "exposed_to": "2022-12-31", "kind": "inherited", "run_id": "r", "recorded_at": ts}
@@ -382,7 +467,7 @@ def _dup_code_rejected():
     d = tempfile.mkdtemp()
     p1, p2 = os.path.join(d, "a.yaml"), os.path.join(d, "b.yaml")
     for p in (p1, p2):
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8", newline="\n") as fh:
             yaml.safe_dump(A, fh, sort_keys=False)
     res = lint_paths([p1, p2], REG_PATH, os.path.join(HERE, "schemas", "card.schema.json"))
     return any("duplicate strategy code" in e for e in res[p2])
@@ -427,6 +512,8 @@ def test_malformed_shapes_never_crash():
 
 
 if __name__ == "__main__":
+    for _s in (sys.stdout, sys.stderr):   # UTF-8 output whatever the console or pipe (Windows defaults to cp1252)
+        _s.reconfigure(encoding="utf-8")
     fails = run()
     n, crashes = fuzz_shapes()
     print(f"shape fuzz: {n} malformed cards, {len(crashes)} crash(es)")

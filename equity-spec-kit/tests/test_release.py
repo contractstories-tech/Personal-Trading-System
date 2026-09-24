@@ -35,7 +35,7 @@ def release_lines(present):
     for f in sorted(present):
         if f.startswith("Issue-Log"):
             continue
-        lines = open(os.path.join(DOCS, f)).read().split("\n", 4)
+        lines = open(os.path.join(DOCS, f), encoding="utf-8").read().split("\n", 4)
         m = re.search(r"Release (r\d+\.\d+)", "\n".join(lines[:4]))
         if not m or m.group(1) != RELEASE:
             out.append(f"{f}: release line says {m.group(1) if m else 'nothing'}, the package is {RELEASE}")
@@ -52,10 +52,10 @@ SEC = re.compile(r"\b(?:Document|Doc)\s+0([1-4])(?:\s+r\d+)?\s*(?:§|s)(\d+)\b")
 def section_references(pk):
     """r5.5 (audit D1): every 'Document 0N §M' / 'Doc 0N sM' names a heading that exists - in every document and
     in the registry (r5.4's registry cited 'Doc 02 s14' after the section had become s13)."""
-    heads = {n: _headings(open(os.path.join(DOCS, f)).read()) for n, (_, f) in pk.items()}
+    heads = {n: _headings(open(os.path.join(DOCS, f), encoding="utf-8").read()) for n, (_, f) in pk.items()}
     out = []
-    sources = [(f, open(os.path.join(DOCS, f)).read()) for f in sorted(os.listdir(DOCS)) if f.endswith(".md")]
-    sources.append(("registry.yaml", open(os.path.join(KIT, "registry.yaml")).read()))
+    sources = [(f, open(os.path.join(DOCS, f), encoding="utf-8").read()) for f in sorted(os.listdir(DOCS)) if f.endswith(".md")]
+    sources.append(("registry.yaml", open(os.path.join(KIT, "registry.yaml"), encoding="utf-8").read()))
     for name, text in sources:
         if name.startswith("Issue-Log"):
             text = text.split("\n## 12.", 1)[-1] if "\n## 12." in text else text.split("\n## ", 1)[0]
@@ -72,7 +72,7 @@ def main():
     for f in sorted(os.listdir(DOCS)):
         if not f.endswith(".md"):
             continue
-        text = open(os.path.join(DOCS, f)).read()
+        text = open(os.path.join(DOCS, f), encoding="utf-8").read()
         if f.startswith("Issue-Log"):
             text = text.split("\n## ", 1)[0]
         for m in REF.finditer(text):
@@ -80,22 +80,22 @@ def main():
             if n in pk and pk[n][0] != r:
                 problems.append(f"{f}: cites '{m.group(0)}', packaged is r{pk[n][0]}")
     for n, (r, f) in pk.items():
-        title = open(os.path.join(DOCS, f)).readline()
+        title = open(os.path.join(DOCS, f), encoding="utf-8").readline()
         if not re.search(rf"\bDocument 0{n} r{r}\b", title):
             problems.append(f"{f}: title does not say 'Document 0{n} r{r}'")
-    readme = open(os.path.join(KIT, "README.md")).read()
+    readme = open(os.path.join(KIT, "README.md"), encoding="utf-8").read()
     listed = set(re.findall(r"docs/([\w.\-]+\.md)", readme))
     present = {f for f in os.listdir(DOCS) if f.endswith(".md")}
     problems += [f"README lists docs/{f}, which is not packaged" for f in sorted(listed - present)]
     problems += [f"docs/{f} is packaged but not listed in README" for f in sorted(present - listed)]
     ov = [f for f in present if f.startswith("Overview-Spec-")]
     rel = RELEASE[1:]
-    if len(ov) != 1 or f"Release {RELEASE}" not in open(os.path.join(DOCS, ov[0])).read().split("\n", 3)[2]:
+    if len(ov) != 1 or f"Release {RELEASE}" not in open(os.path.join(DOCS, ov[0]), encoding="utf-8").read().split("\n", 3)[2]:
         problems.append(f"the Overview must be the single current spec and say 'Release {RELEASE}'")
     if len(ov) == 1 and ov[0] != f"Overview-Spec-v{rel.replace('.', '-')}.md":
         problems.append(f"Overview filename {ov[0]} does not match release {RELEASE}")
     il = [f for f in present if f.startswith("Issue-Log")]
-    if len(il) != 1 or RELEASE not in open(os.path.join(DOCS, il[0])).readline():
+    if len(il) != 1 or RELEASE not in open(os.path.join(DOCS, il[0]), encoding="utf-8").readline():
         problems.append(f"the Issue Log title must include {RELEASE}")
     problems += release_lines(present) + section_references(pk)
     for p in problems:
@@ -105,4 +105,6 @@ def main():
 
 
 if __name__ == "__main__":
+    for _s in (sys.stdout, sys.stderr):   # UTF-8 output whatever the console or pipe (Windows defaults to cp1252)
+        _s.reconfigure(encoding="utf-8")
     main()

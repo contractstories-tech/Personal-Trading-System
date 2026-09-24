@@ -32,7 +32,7 @@ def bars(day, bump=None):
 def legacy(path, day, rows=None):
     rows = rows if rows is not None else bars(day)
     ts = day.strftime("%d-%b-%Y").upper()
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write("SYMBOL,SERIES,OPEN,HIGH,LOW,CLOSE,LAST,PREVCLOSE,TOTTRDQTY,TOTTRDVAL,TIMESTAMP,TOTALTRADES,ISIN,\n")
         for r in rows:
             f.write(f"{r['sym']},{r['ser']},{r['o']},{r['h']},{r['l']},{r['c']},{r['last']},{r['pc']},{r['vol']},"
@@ -43,7 +43,7 @@ def legacy(path, day, rows=None):
 def udiff(path, day, rows=None):
     rows = rows if rows is not None else bars(day)
     d = day.isoformat()
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(UDIFF_HDR + "\n")
         for n, r in enumerate(rows):
             f.write(f"{d},{d},CM,NSE,STK,{1000 + n},{r['isin']},{r['sym']},{r['ser']},,,,,{r['sym']} LTD,{r['o']},"
@@ -54,7 +54,7 @@ def udiff(path, day, rows=None):
 
 def mto(path, day, deliv=None, rows=None):
     rows = rows if rows is not None else bars(day)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write("Security Wise Delivery Position - Compulsory Rolling Settlement\n")
         f.write(f"10,MTO,{day.strftime('%d%m%Y')},123456789,{len(rows):07d}\n")
         f.write(f"Trade Date <{day.strftime('%d-%b-%Y').upper()}>,Settlement Type <N>,Settlement No <2026001>,"

@@ -322,6 +322,15 @@ promotion:
   - {id: G32d, doc: "the 2-standard-error rule itself: holdout mean 0.00475 = design 0.01 - 2.1 x holdout SE 0.0025 -> inconsistent (a 2.2-SE rule would accept it)",
      design: [0.01, 0.02, -0.005, 0.015], holdout: [0.00475, -0.00525, 0.01475, 0.00475], n_trials: 1, lag: 1,
      expect: {design_pass: true, holdout_positive: true, holdout_consistent: false, pass: false}}
+  - {id: G32g, doc: "r5.6: a design series with no variation (every month +1%) has no Newey-West t-statistic; r5.5 divided by zero. Undefined never passes, however good the mean looks",
+     design: [0.01, 0.01, 0.01, 0.01], holdout: [0.01, 0.0, 0.02, 0.01], n_trials: 1, lag: 1,
+     expect: {design_t: null, degenerate: true, design_pass: false, min_detectable_alpha: 0.0, pass: false}}
+  - {id: G32h, doc: "all-zero design excess (a strategy that never traded): degenerate, fails, and does not crash",
+     design: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], holdout: [0.0, 0.0, 0.0], n_trials: 3, lag: null,
+     expect: {design_t: null, degenerate: true, design_pass: false, holdout_positive: false, pass: false}}
+  - {id: G32i, doc: "a tiny but real variation is not degenerate: the statistic is defined (and huge)",
+     design: [0.0100, 0.0101, 0.0100, 0.0101], holdout: [0.01, 0.0, 0.02, 0.01], n_trials: 1, lag: 1,
+     expect: {degenerate: false, design_pass: true}}
 sensitivity:
   - {id: G30a, doc: "broad stable region passes", center: 0.10, neighbours: [0.09, 0.08], expect: true}
   - {id: G30b, doc: "isolated spike at the chosen value fails", center: 0.10, neighbours: [0.02, 0.01], expect: false}

@@ -21,6 +21,7 @@ Usage:  python3 speclint.py [--registry registry.yaml] [--schema schemas/card.sc
         --closure prints each card's current registry closure hash (to pin it after a deliberate change)
 Exit:   0 = all pass, 1 = violations, 2 = unreadable registry/schema.
 """
+import datetime as dt
 import hashlib, json, math, os, re, sys
 import yaml
 
@@ -46,7 +47,7 @@ StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no
 
 
 def load_yaml(path):
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         return yaml.load(fh, Loader=StrictLoader)
 
 
@@ -382,12 +383,13 @@ class Checker:
 
 
 # ------------------------------------------------------------------ registry closure (audit A4)
-FIELD_ENUMS = ["unknown_behaviour", "attempt_policy", "recheck_failure", "on_exhausted", "exit_execution",
-               "exit_cadence", "on_out_of_domain", "ttl_unit", "status", "direction", "trade_direction",
-               "selection_method", "capacity_order", "residual_cash", "horizon", "universe_base", "weekday",
-               "calibration_statistic", "calibration_sampling", "persist_unit"]
-GLOBAL_BLOCKS = ["evaluation_semantics", "window_conventions", "cross_sectional_scoring", "confidence_policy",
-                 "cutoff_policy", "security_identity", "valuation_transformative_actions"]
+# Blocks that define what every card's expressions mean. r5.5 also put every field enum (status, weekday,
+# horizon ...) and valuation_transformative_actions in every closure, so adding a weekday re-pinned both cards
+# (review of r5.5). An enum a card only uses as a field value is checked against the registry on every lint;
+# adding a value to it cannot change what the card means, so it is not in the closure (r5.6).
+GLOBAL_BLOCKS = ["evaluation_semantics", "window_conventions", "session_policy", "confidence_policy",
+                 "cutoff_policy", "security_identity"]
+RANKING_BLOCKS = ["cross_sectional_scoring"]      # only for cards that score a population
 
 
 def card_expressions(card):
@@ -419,11 +421,16 @@ def registry_closure(card, reg):
         except ExprError:
             pass
     feats = set(card.get("features", []))
-    enums = set(FIELD_ENUMS) | chk.enums
+    enums = set(chk.enums)                         # enum literals and enum-typed arguments in expressions
+    blocks = list(GLOBAL_BLOCKS)
+    if card.get("selection_method") == "rank_and_gate" or card.get("composites"):
+        blocks += RANKING_BLOCKS
     for f in feats:
-        t = str(reg["features"].get(f, {}).get("type", ""))
+        entry = reg["features"].get(f, {})
+        t = str(entry.get("type", ""))
         if t.startswith("enum:"):
             enums.add(t[5:])
+        blocks += [b for b in entry.get("depends_on", []) if b not in blocks]
     runtime = (chk.refs | set(card.get("ca_state_held", [])) | {"hard_cap_value", "provisional_value_cr"})
     if card.get("stop"):
         runtime |= {"stop_in_force", "stop_prev", "highest_close_since_entry", "atr_pct_at_peak", "atr_pct_at_signal"}
@@ -445,7 +452,7 @@ def registry_closure(card, reg):
         "benchmarks": sorted(b for b in (card.get("benchmark"), card.get("secondary_benchmark")) if b in reg["benchmarks"]),
         "sector_codes": sorted(x for x in card.get("universe", {}).get("exclude_sectors", []) if x in reg["sector_codes"]),
     }
-    for b in GLOBAL_BLOCKS:
+    for b in blocks:
         closure[b] = reg.get(b)
     return closure
 
@@ -495,6 +502,19 @@ def lint(card, reg, schema, status="experimental"):
     for f, b in card["unknown_overrides"].items():
         if b == "penalise" and f not in secondary:
             err(f"unknown_override '{f}: penalise' - '{f}' is material; its absence must block or exclude")
+
+    # materiality reaches ranking (r5.6): a composite may tolerate missing SECONDARY inputs only
+    for name, comp in card.get("composites", {}).items():
+        material = [i["code"] for i in comp["inputs"] if i["code"] not in secondary]
+        if comp["min_inputs_known"] < len(material):
+            err(f"composite '{name}': min_inputs_known {comp['min_inputs_known']} would rank a security with a material "
+                f"input missing ({', '.join(material)} are material); it must be at least {len(material)}")
+        if comp["min_inputs_known"] > len(comp["inputs"]):
+            err(f"composite '{name}': min_inputs_known {comp['min_inputs_known']} exceeds its {len(comp['inputs'])} inputs")
+    for f in declared:
+        for b in feats.get(f, {}).get("depends_on", []):
+            if b not in reg:
+                err(f"registry feature '{f}' depends_on unknown registry block '{b}'")
 
     # registry pin: the closure, not the file
     if card["registry"]["version"].split(".")[0] != str(reg["registry_version"]).split(".")[0]:
@@ -852,14 +872,14 @@ def lint(card, reg, schema, status="experimental"):
 def load_transitions(lifecycle_dir):
     """Every transition record, validated against its schema. Returns (records, errors)."""
     tdir = os.path.join(lifecycle_dir, "transitions")
-    sch = json.load(open(os.path.join(HERE, "schemas", "strategy_lifecycle_transition.schema.json")))
+    sch = json.load(open(os.path.join(HERE, "schemas", "strategy_lifecycle_transition.schema.json"), encoding="utf-8"))
     recs, errs = [], []
     if not os.path.isdir(tdir):
         return recs, errs
     for f in sorted(os.listdir(tdir)):
         if not f.endswith(".json"):
             continue
-        rec = json.load(open(os.path.join(tdir, f)))
+        rec = json.load(open(os.path.join(tdir, f), encoding="utf-8"))
         e = schema_errors(rec, sch, sch, f"lifecycle/{f}")
         if e:
             errs += e
@@ -868,12 +888,47 @@ def load_transitions(lifecycle_dir):
     return recs, errs
 
 
-def lifecycle_status(code, card_sha, records):
-    """(status, record file) from the latest record for this card hash; (None, None) if unregistered.
-    Also checks the chain: each record for the hash starts where the previous one ended."""
-    chain = sorted((r for r in records if r["strategy_code"] == code and r["card_sha256"] == card_sha),
-                   key=lambda r: r["decided_at"])
-    problems, prev = [], "none"
+FUTURE_TOLERANCE = dt.timedelta(minutes=5)
+
+
+def decided_instant(rec):
+    """decided_at as an aware UTC instant. r5.5 ordered records by the decided_at STRING, so
+    2026-09-24T18:00:00+05:30 sorted after 2026-09-24T13:00:00Z although it is 30 minutes earlier (review of
+    r5.5). A timestamp without an offset is refused: it names no instant."""
+    s = str(rec["decided_at"])
+    try:
+        t = dt.datetime.fromisoformat(s[:-1] + "+00:00" if s.endswith("Z") else s)
+    except ValueError:
+        raise ValueError(f"lifecycle/{rec.get('_file', '?')}: decided_at {s!r} is not an RFC 3339 timestamp") from None
+    if t.tzinfo is None:
+        raise ValueError(f"lifecycle/{rec.get('_file', '?')}: decided_at {s!r} has no UTC offset")
+    return t.astimezone(dt.timezone.utc)
+
+
+def lifecycle_status(code, card_sha, records, now=None):
+    """(status, record file, problems) from the latest record for this card hash; (None, None, problems) if
+    unregistered. Records are ordered by the instant they were decided; the chain must be unambiguous (no two
+    records at one instant), in file order, not in the future, and each record starts where the previous ended."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    problems, chain = [], []
+    for r in records:
+        if r["strategy_code"] != code or r["card_sha256"] != card_sha:
+            continue
+        try:
+            chain.append((decided_instant(r), r))
+        except ValueError as e:
+            problems.append(str(e))
+    for t, r in chain:
+        if t > now + FUTURE_TOLERANCE:
+            problems.append(f"lifecycle/{r['_file']}: decided_at {r['decided_at']} is in the future")
+    chain.sort(key=lambda x: x[0])
+    for (t1, r1), (t2, r2) in zip(chain, chain[1:]):
+        if t1 == t2:
+            problems.append(f"lifecycle/{r1['_file']} and {r2['_file']}: decided at the same instant; order is ambiguous")
+        elif r1["_file"] > r2["_file"]:
+            problems.append(f"lifecycle/{r2['_file']} is filed before {r1['_file']} but decided after it")
+    chain = [r for _, r in chain]
+    prev = "none"
     for r in chain:
         if r["from_status"] != prev:
             problems.append(f"lifecycle/{r['_file']}: from_status {r['from_status']} but the card was {prev}")
@@ -885,7 +940,7 @@ def lifecycle_status(code, card_sha, records):
 
 def lint_paths(card_paths, registry_path, schema_path, lifecycle_dir=None):
     reg = load_yaml(registry_path)
-    schema = json.load(open(schema_path))
+    schema = json.load(open(schema_path, encoding="utf-8"))
     records, rec_errs = load_transitions(lifecycle_dir or os.path.join(HERE, "lifecycle"))
     results, codes, statuses = {}, {}, {}
     for p in card_paths:
@@ -944,4 +999,6 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    for _s in (sys.stdout, sys.stderr):   # UTF-8 output whatever the console or pipe (Windows defaults to cp1252)
+        _s.reconfigure(encoding="utf-8")
     sys.exit(main(sys.argv))

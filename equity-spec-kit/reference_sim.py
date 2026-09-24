@@ -500,7 +500,7 @@ def newey_west_se(series, lag):
     dev = [x - mu for x in series]
     g = lambda j: sum(dev[t] * dev[t - j] for t in range(j, n)) / n
     var = g(0) + 2 * sum((1 - j / (lag + 1)) * g(j) for j in range(1, lag + 1))
-    return math.sqrt(var / n)
+    return math.sqrt(max(var, 0.0) / n)      # Bartlett weights keep var >= 0; max() absorbs rounding below zero
 
 
 def turnover(total_traded_value, average_portfolio_value, years):
@@ -523,8 +523,16 @@ def max_drawdown(values):
     return worst
 
 
+DEGENERATE_SE = 1e-12   # a monthly standard error below this is no variation at all, not a precise estimate
+
+
 def nw_tstat(series, lag):
-    return (sum(series) / len(series)) / newey_west_se(series, lag)
+    """Mean over its Newey-West SE; None when the series has no variation (r5.6: r5.5 divided by zero, so a
+    constant excess-return series - a data fault, or a strategy that never traded - crashed the report)."""
+    se = newey_west_se(series, lag)
+    if se <= DEGENERATE_SE:
+        return None
+    return (sum(series) / len(series)) / se
 
 
 def promotion_hurdle(n_trials, alpha=0.05):
@@ -544,9 +552,11 @@ def promotion_decision(design_excess, holdout_excess, n_trials, lag=6):
     mu_d, mu_h = sum(design_excess) / len(design_excess), sum(holdout_excess) / len(holdout_excess)
     se_h = newey_west_se(holdout_excess, min(lag, len(holdout_excess) - 1))
     consistent = mu_h >= mu_d - 2 * se_h
-    return {"design_t": round(t, 6), "hurdle": round(h, 6), "design_pass": t >= h, "holdout_positive": mu_h > 0,
-            "holdout_consistent": consistent, "holdout_se": round(se_h, 6), "min_detectable_alpha": round(h * se_d * 12, 6),
-            "pass": t >= h and mu_h > 0 and consistent}
+    design_pass = t is not None and t >= h          # an undefined statistic never passes (degenerate design)
+    return {"design_t": None if t is None else round(t, 6), "degenerate": t is None, "hurdle": round(h, 6),
+            "design_pass": design_pass, "holdout_positive": mu_h > 0, "holdout_consistent": consistent,
+            "holdout_se": round(se_h, 6), "min_detectable_alpha": round(h * se_d * 12, 6),
+            "pass": design_pass and mu_h > 0 and consistent}
 
 
 def sensitivity_ok(center, neighbours, floor_ratio=0.5, spike_ratio=1.5):

@@ -17,7 +17,7 @@ sys.path.insert(0, HERE)
 import reference_features as F  # noqa: E402
 from test_golden import close  # noqa: E402
 
-G = yaml.safe_load(open(os.path.join(HERE, "golden", "feature_cases.yaml")))
+G = yaml.safe_load(open(os.path.join(HERE, "golden", "feature_cases.yaml"), encoding="utf-8"))
 
 
 def _field(spec, i, base=None):
@@ -146,7 +146,7 @@ CARD_FEATURE_TO_FN = {
 
 def coverage_gaps():
     """Features read by a card with no golden case for every function that defines them."""
-    cards = [yaml.safe_load(open(os.path.join(HERE, "strategies", f))) for f in sorted(os.listdir(os.path.join(HERE, "strategies")))]
+    cards = [yaml.safe_load(open(os.path.join(HERE, "strategies", f), encoding="utf-8")) for f in sorted(os.listdir(os.path.join(HERE, "strategies")))]
     used = {f for c in cards for f in c["features"]}
     have = {c.get("fn") for sec in G.values() if isinstance(sec, list) for c in sec if isinstance(c, dict)}
     have |= {"ey_median", "ev_ebitda"} if G.get("ey_median") and G.get("ev_ebitda") else set()
@@ -276,6 +276,8 @@ def test_feature_cases_have_teeth():
 
 
 if __name__ == "__main__":
+    for _s in (sys.stdout, sys.stderr):   # UTF-8 output whatever the console or pipe (Windows defaults to cp1252)
+        _s.reconfigure(encoding="utf-8")
     fails = run()
     gaps = coverage_gaps()
     print("every card-read feature has golden cases" if not gaps else f"COVERAGE GAPS: {gaps}")

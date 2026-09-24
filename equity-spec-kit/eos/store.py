@@ -30,8 +30,11 @@ import decimal
 import hashlib
 import json
 import os
+import socket
 import threading
 import uuid
+
+from . import fsio
 
 D4 = decimal.Decimal("0.0001")
 
@@ -64,6 +67,10 @@ TABLES = {
     "row_quarantine": {
         "table_name": "str", "trade_date": "date", "isin": "str", "symbol": "str", "series": "str",
         "reason": "str", "detail": "str", "file_sha256": "str", "logged_at": "ts"},
+    # r5.6: every source file is landed byte-for-byte before it is parsed; this row names the landed copy
+    "raw_file": {
+        "source_id": "str", "file_sha256": "str", "original_name": "str", "source_url": "str",
+        "retrieved_at": "ts", "received_at": "ts", "size_bytes": "int", "landed_path": "str"},
 }
 
 
@@ -187,23 +194,10 @@ def codec(name):
 
 
 # ------------------------------------------------------------------ durable writes
-def _fsync_dir(path):
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 def _atomic_write(path, data):
-    d = os.path.dirname(path)
-    tmp = os.path.join(d, f".tmp-{uuid.uuid4().hex}")
-    with open(tmp, "wb") as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
-    _fsync_dir(d)
+    """Temp file, flush to disk, then the platform's durable replace (eos/fsio.py): directory fsync on POSIX,
+    MoveFileExW write-through on Windows. r5.5 fsync-ed the directory everywhere, which cannot work on Windows."""
+    fsio.write_durable(path, data, f".tmp-{uuid.uuid4().hex}")
 
 
 class Batch:
@@ -247,6 +241,7 @@ class Warehouse:
         self.codec = codec(codec_name)
         self._held = 0          # re-entrancy depth, valid only for the owning thread
         self._owner = None
+        self._lock_fd = None
         for d in ("", "_batches", "_applied"):
             os.makedirs(os.path.join(root, d), exist_ok=True)
 
@@ -258,7 +253,7 @@ class Warehouse:
 
     def _manifest(self, pdir):
         p = os.path.join(pdir, "_manifest.json")
-        return json.load(open(p)) if os.path.exists(p) else {"parts": []}
+        return json.loads(fsio.read_bytes(p).decode("utf-8")) if os.path.exists(p) else {"parts": []}
 
     def partitions(self, table):
         base = os.path.join(self.root, table)
@@ -270,19 +265,26 @@ class Warehouse:
     # ---- the writer: one lock for the whole logical operation
     @contextlib.contextmanager
     def writer(self):
+        """An operating-system lock (eos/fsio.py), released by the OS if this process dies, so a crash never
+        leaves a stale lock (r5.5's O_EXCL file did). Re-entrant for the owning thread only."""
         lock = os.path.join(self.root, ".writer.lock")
         me = threading.get_ident()
         if self._held and self._owner != me:
             # re-entry is per THREAD: another thread sharing this object must take the lock like anyone else
-            raise StoreError(f"another writer holds {lock}; remove it only if no ingestion is running")
+            raise StoreError(f"another writer holds {lock}")
         if self._held == 0:
             try:
-                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
-                raise StoreError(f"another writer holds {lock}; remove it only if no ingestion is running")
-            os.write(fd, f"pid {os.getpid()}\n".encode())
-            os.close(fd)
+                self._lock_fd = fsio.lock_exclusive(lock)
+            except fsio.LockHeld:
+                raise StoreError(f"another writer holds {lock} (the lock is released automatically when "
+                                 f"that process exits; see {os.path.join(self.root, '.writer.owner')})") from None
             self._owner = me
+            try:   # diagnostics only; the OS lock is the authority
+                with open(os.path.join(self.root, ".writer.owner"), "w", encoding="utf-8") as f:
+                    f.write(f"pid {os.getpid()}\nhost {socket.gethostname()}\n"
+                            f"since {dt.datetime.now(dt.timezone.utc).isoformat()}\n")
+            except OSError:
+                pass
         self._held += 1
         try:
             if self._held == 1:
@@ -292,7 +294,35 @@ class Warehouse:
             self._held -= 1
             if self._held == 0:
                 self._owner = None
-                os.remove(lock)
+                fd, self._lock_fd = self._lock_fd, None
+                fsio.unlock(fd)
+
+    # ---- raw landing (r5.6): the exact bytes of every source file, content-addressed and write-once
+    def land(self, source_id, path):
+        """Copy a source file into _raw/<source_id>/<sha256><ext> and return (sha256, landed_path, size).
+        Write-once: landing the same content again is a no-op; a landed file whose bytes no longer match
+        its name is an IntegrityError. Parsing then reads the landed copy, never the original, so a later
+        change to the download folder cannot change what was ingested. Needs the writer lock."""
+        if not self._held or self._owner != threading.get_ident():
+            raise StoreError("land() needs Warehouse.writer()")
+        if not source_id.replace("_", "").isalnum():
+            raise StoreError(f"source_id {source_id!r}: letters, digits and underscores only")
+        data = fsio.read_bytes(path)
+        sha = hashlib.sha256(data).hexdigest()
+        ext = "".join(c for c in os.path.splitext(path)[1].lower() if c.isalnum() or c == ".")[:10]
+        rel = f"_raw/{source_id}/{sha}{ext}"
+        dest = os.path.join(self.root, *rel.split("/"))
+        if os.path.exists(dest):
+            if hashlib.sha256(fsio.read_bytes(dest)).hexdigest() != sha:
+                raise IntegrityError(f"{rel}: landed bytes no longer match their hash")
+            return sha, rel, len(data)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        _atomic_write(dest, data)
+        os.chmod(dest, 0o444)          # read-only attribute on Windows too
+        return sha, rel, len(data)
+
+    def raw_path(self, landed_path):
+        return os.path.join(self.root, *landed_path.split("/"))
 
     def batch(self):
         if not self._held or self._owner != threading.get_ident():
@@ -336,7 +366,7 @@ class Warehouse:
             raise StoreError("recover() needs Warehouse.writer()")
         done = []
         for bid in self.pending():
-            rec = json.load(open(os.path.join(self.root, "_batches", f"{bid}.json")))
+            rec = json.loads(fsio.read_bytes(os.path.join(self.root, "_batches", f"{bid}.json")).decode("utf-8"))
             for e in rec["parts"]:
                 if not os.path.exists(os.path.join(self.pdir(e["table"], e["key"]), e["file"])):
                     raise IntegrityError(f"committed batch {bid} names a missing part {e['file']}")
@@ -375,7 +405,7 @@ class Warehouse:
                 if p.get("batch") not in committed:
                     raise IntegrityError(f"{table}/{k}/{p['file']} is listed but its batch {p.get('batch')} "
                                          f"has no commit record")
-                data = open(os.path.join(pdir, p["file"]), "rb").read()
+                data = fsio.read_bytes(os.path.join(pdir, p["file"]))
                 if hashlib.sha256(data).hexdigest() != p["sha256"]:
                     raise StoreError(f"{table}/{k}/{p['file']}: content does not match its manifest hash")
                 out.extend(self.codec.loads(table, data))

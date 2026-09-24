@@ -17,7 +17,7 @@ import reference_engine as E  # noqa: E402
 from speclint import load_yaml  # noqa: E402
 from test_golden import close  # noqa: E402
 
-G = yaml.safe_load(open(os.path.join(HERE, "golden", "card_cases.yaml")))
+G = yaml.safe_load(open(os.path.join(HERE, "golden", "card_cases.yaml"), encoding="utf-8"))
 REG = load_yaml(os.path.join(HERE, "registry.yaml"))
 CARDS = {c: load_yaml(os.path.join(HERE, "strategies", f"{c}.yaml")) for c in ("ltqv_v1", "mom_v1")}
 
@@ -45,7 +45,8 @@ def cases(cards):
     for c in G["confidence"]:
         e = engine(c["card"], cards)
         f = {k: {"state": "known", "value": 1} for k in cards[c["card"]]["features"]}
-        f.update({k: {"state": "missing"} for k in c["missing"]})
+        f.update({k: {"state": "missing"} for k in c.get("missing", [])})
+        f.update({k: {"state": "conflicted", "value": 1} for k in c.get("conflicted", [])})
         yield c["id"], list(e.confidence(f)), c["expect"]
     for c in G["stops"]:
         yield c["id"], engine(c["card"], cards).run_stop(c["entry_fill"], c["atr_at_signal"], c["sessions"]), c["expect"]
@@ -63,12 +64,16 @@ def cases(cards):
     for c in G["size_checks"]:
         yield c["id"], engine(c["card"], cards).size_checks(feats(c["features"]), c["provisional_value_cr"]), c["expect"]
     for c in G["construction"]:
-        taken, rest = E.construct(c["candidates"], set(c["held"]), c["max_positions"], c["cash"])
-        yield c["id"], {"taken": [[i, v] for i, v in taken], "not_taken": rest}, c["expect"]
+        try:
+            taken, rest = E.construct(c["candidates"], set(c["held"]), c["max_positions"], c["cash"])
+            got = {"taken": [[i, v] for i, v in taken], "not_taken": rest}
+        except ValueError as e:
+            got = {"error": str(e)}
+        yield c["id"], got, c["expect"]
     for c in G["scale"]:
         yield c["id"], float(E.actual_target(c["target_value"], c["notional"], c["total"], c["headroom"])), c["expect"]
     for c in G["weekly"]:
-        yield c["id"], E.weekly_sessions([tuple(x) for x in c["calendar"]], c["weekday"]), c["expect"]
+        yield c["id"], E.weekly_sessions([tuple(x) for x in c["calendar"]], c["weekday"], REG), c["expect"]
     for c in G["ranking"]:
         e = engine(c["card"], cards)
         pop = {f"S{i:02d}" if i < 10 else f"S{i}": {"vol_adj_mom_12m": {"state": "known", "value": i},
@@ -78,6 +83,31 @@ def cases(cards):
         ranks = e.rank_scores(pop)
         order = sorted((i for i in ranks if ranks[i] is not None), key=lambda i: -ranks[i])
         yield c["id"], order[:3] + [ranks["SNONE"]], c["expect_top3"] + [None]
+    for c in G["ranking_states"]:
+        e = engine(c["card"], cards)
+        detail = e.rank_detail(ranking_population(e, c["n"], c.get("overrides")))
+        if "expect_equal_rank" in c:
+            name = c["expect_equal_rank"][0]
+            twin = {k: {**v, "state": "known"} for k, v in c["overrides"][name].items()}
+            twin_detail = e.rank_detail(ranking_population(e, c["n"], {name: twin}))
+            yield c["id"], detail[name]["rank"], twin_detail[name]["rank"]
+            continue
+        got = {i: (None if detail[i]["rank"] is None else "ranked") for i in c["expect"]}
+        got.update({f"{i} reason": detail[i]["reason"] for i in c.get("reason", {})})
+        want = dict(c["expect"], **{f"{i} reason": r for i, r in c.get("reason", {}).items()})
+        yield c["id"], got, want
+    for c in G["evaluate"]:
+        e = engine(c["card"], cards, c.get("params"))
+        r = e.evaluate(feats(c["features"]), rank=c["rank"])
+        yield c["id"], {"candidate": r["candidate"], "status": r["status"]}, c["expect"]
+
+
+def ranking_population(e, n, overrides=None):
+    """Names S01..Sn; every ranking input of Si is i (known), then per-name state overrides."""
+    pop = {f"S{i:02d}": {f: {"state": "known", "value": i} for f in e.ranking_inputs()} for i in range(1, n + 1)}
+    for name, fs in (overrides or {}).items():
+        pop[name].update(fs)
+    return pop
 
 
 def run(cards=CARDS, verbose=True):
@@ -171,6 +201,8 @@ def test_card_edits_are_caught():
 
 
 if __name__ == "__main__":
+    for _s in (sys.stdout, sys.stderr):   # UTF-8 output whatever the console or pipe (Windows defaults to cp1252)
+        _s.reconfigure(encoding="utf-8")
     fails = run()
     cap_ok = engine_enforces_the_cap_whatever_the_card_says()
     print(f"{'ok  ' if cap_ok else 'FAIL'}  engine clamps a quantity that ignores the hard cap")

@@ -7,7 +7,7 @@ KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def verify(d):
-    return subprocess.run([sys.executable, "make_manifest.py", "--verify"], cwd=d, capture_output=True, text=True)
+    return subprocess.run([sys.executable, "make_manifest.py", "--verify"], cwd=d, capture_output=True, text=True, encoding="utf-8")
 
 
 def copy():
@@ -23,25 +23,25 @@ def main():
     base = verify(k)
     cases = [("freshly written manifest verifies", base.returncode == 0)]
 
-    m = json.load(open(os.path.join(k, "MANIFEST.json")))
+    m = json.load(open(os.path.join(k, "MANIFEST.json"), encoding="utf-8"))
     m["release"] = "r5.1"   # the r5.2 defect: files and digest intact, label wrong
-    json.dump(m, open(os.path.join(k, "MANIFEST.json"), "w"), indent=1, sort_keys=True)
+    json.dump(m, open(os.path.join(k, "MANIFEST.json"), "w", encoding="utf-8", newline="\n"), indent=1, sort_keys=True)
     cases.append(("stale release label fails --verify", verify(k).returncode == 1))
 
     k2 = copy()
     subprocess.run([sys.executable, "make_manifest.py"], cwd=k2, capture_output=True)
-    src = open(os.path.join(k2, "make_manifest.py")).read()
+    src = open(os.path.join(k2, "make_manifest.py"), encoding="utf-8").read()
     rel = src.split('RELEASE = "')[1].split('"')[0]
-    open(os.path.join(k2, "README.md"), "a").close()
-    lines = open(os.path.join(k2, "README.md")).read().split("\n", 1)
-    open(os.path.join(k2, "README.md"), "w").write(lines[0].replace(rel, "r0.0") + "\n" + lines[1])
+    open(os.path.join(k2, "README.md"), "a", encoding="utf-8", newline="\n").close()
+    lines = open(os.path.join(k2, "README.md"), encoding="utf-8").read().split("\n", 1)
+    open(os.path.join(k2, "README.md"), "w", encoding="utf-8", newline="\n").write(lines[0].replace(rel, "r0.0") + "\n" + lines[1])
     subprocess.run([sys.executable, "make_manifest.py"], cwd=k2, capture_output=True)  # re-hash: only the label is wrong
     cases.append(("README naming another release fails --verify", verify(k2).returncode == 1))
 
     k3 = copy()
     os.makedirs(os.path.join(k3, "docs", ".git"))
-    open(os.path.join(k3, "docs", ".git", "HEAD"), "w").write("ref: refs/heads/main\n")
-    w = subprocess.run([sys.executable, "make_manifest.py"], cwd=k3, capture_output=True, text=True)
+    open(os.path.join(k3, "docs", ".git", "HEAD"), "w", encoding="utf-8", newline="\n").write("ref: refs/heads/main\n")
+    w = subprocess.run([sys.executable, "make_manifest.py"], cwd=k3, capture_output=True, text=True, encoding="utf-8")
     v = verify(k3)
     cases.append(("a stray hidden directory is refused by build and verify",
                   w.returncode != 0 and v.returncode != 0 and ".git" in (w.stderr + w.stdout)))
@@ -54,4 +54,6 @@ def main():
 
 
 if __name__ == "__main__":
+    for _s in (sys.stdout, sys.stderr):   # UTF-8 output whatever the console or pipe (Windows defaults to cp1252)
+        _s.reconfigure(encoding="utf-8")
     main()

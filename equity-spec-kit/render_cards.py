@@ -55,6 +55,8 @@ def check(doc_path):
 
 
 if __name__ == "__main__":
+    for _s in (sys.stdout, sys.stderr):   # UTF-8 output whatever the console or pipe (Windows defaults to cp1252)
+        _s.reconfigure(encoding="utf-8")
     if len(sys.argv) == 3 and sys.argv[1] == "--check":
         sys.exit(check(sys.argv[2]))
     print(render())

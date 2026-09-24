@@ -1,0 +1,170 @@
+# End-to-end golden cases: population -> universe -> filters -> ranking -> gates -> size checks -> capacity ->
+# quantities -> published claims, through reference_engine.run_pipeline and the cards' own expressions (r5.6).
+# r5.5 had goldens for each stage but none for the chain (review of r5.5).
+#
+# Population: names S01..S<names>. A feature value is the same for every name, or [a, b] = a + b*i for name Si
+# (exact decimal arithmetic), or {floor: [a, b]} = floor(a + b*i). overrides replace features per name; a state
+# mapping ({state: missing}, {state: conflicted, value: v}) is used as given. Every name is market-eligible in
+# sector it_services with market cap 1000 + i unless an override says otherwise (_sector, _eligible).
+#
+# Expected values were worked by hand from the cards; the arithmetic is in each case's doc.
+cases:
+  - id: P1
+    card: mom_v1
+    doc: >-
+      32 names, capacity 3, model cash 12 lakh. G4 (vol_adj_mom_12m >= 0.60) fails S01-S04 (S05 is exactly 0.60 and
+      passes after 9-dp quantisation). S32 fails G1 (ADV 20 < 25 cr). S31 has 6 circuit days: filtered out of the
+      candidates and the scoring population. S30's circuit days are unknown: out of the candidates, still scored.
+      S29's 6-month momentum is missing (exclude): unrankable, so not a candidate - r5.5 would have admitted it
+      after the ranked names. S28's 6-month momentum is conflicted: it ranks with its primary value (top, as i =
+      28 is the best remaining) and drops confidence one band to medium, still published. Sizing: target =
+      min(1e7 x 0.005 / (2.5 x 0.02), 1e7 x 0.05) = 5,00,000; S28 and S27 get it: qty = min(5000, floor(500000 /
+      103) = 4854, floor(50000 / (103 x 0.05)) = 9708) = 4854. S26 gets the remaining 2,00,000, so its hard cap is
+      2,00,000: qty = min(2000, floor(200000 / 103) = 1941, 9708) = 1941 - the worst fill (103) never overdraws the
+      model's cash. S05-S25 pass everything and are recorded as no_capacity.
+    params: {notional_capital: 10000000, risk_to_stop_pct: 0.005, max_position_pct: 0.05, band_fno: 0.25, band_cash: 0.45}
+    names: 32
+    close: 100
+    cash: 1200000
+    max_positions: 3
+    held: []
+    features:
+      adv_20d_cr: 30
+      price_vs_dma200: 1.2
+      price_vs_dma50: 1.1
+      ret_12m_skip_1m: 0.3
+      ret_6m_skip_1m: 0.15
+      realised_vol_60d: 0.3
+      vol_adj_mom_12m: [0.5, 0.02]
+      vol_adj_mom_6m: [0.4, 0.01]
+      rel_strength_6m_vs_nifty200_tri: 0.1
+      delivery_pct_20d_avg: 0.5
+      is_fno_eligible: false
+      atr_pct_20: 0.02
+      circuit_days_60d: 2
+      surveillance_stage: none
+      market_breadth: 0.6
+    overrides:
+      S32: {adv_20d_cr: 20}
+      S31: {circuit_days_60d: 6}
+      S30: {circuit_days_60d: {state: missing}}
+      S29: {vol_adj_mom_6m: {state: missing}}
+      S28: {vol_adj_mom_6m: {state: conflicted, value: 0.68}}
+    expect:
+      entries: [[S28, 4854], [S27, 4854], [S26, 1941]]
+      published: [S26, S27, S28]
+      status:
+        failed: [S01, S02, S03, S04, S32]
+        filtered: [S31]
+        filter_unknown: [S30]
+        unrankable: [S29]
+        taken: [S26, S27, S28]
+        no_capacity: [S05, S06, S07, S08, S09, S10, S11, S12, S13, S14, S15, S16, S17, S18, S19, S20, S21, S22, S23, S24, S25]
+      confidence: {S28: medium, S27: high, S26: high}
+
+  - id: P2
+    card: mom_v1
+    doc: >-
+      P1's population measured on 1,000 crore of notional capital: target = min(1e10 x 0.005 / 0.05, 1e10 x 0.05) =
+      50 crore per name. S2 (value <= 10% of ADV) needs 50 <= 3 and S1 (impact 0.001 + 0.02 x sqrt(50/30) = 0.0268 >
+      0.0035) fails too, for every candidate: the strategy is silent at this scale. The measurement capital decides
+      which size-dependent checks pass, which is why it is part of the hypothesis.
+    params: {notional_capital: 10000000000, risk_to_stop_pct: 0.005, max_position_pct: 0.05, band_fno: 0.25, band_cash: 0.45}
+    names: 32
+    close: 100
+    cash: 10000000000
+    max_positions: 3
+    held: []
+    features: {from: P1}
+    overrides: {from: P1}
+    expect:
+      entries: []
+      published: []
+      status:
+        failed: [S01, S02, S03, S04, S32]
+        filtered: [S31]
+        filter_unknown: [S30]
+        unrankable: [S29]
+        size_check_failed: [S05, S06, S07, S08, S09, S10, S11, S12, S13, S14, S15, S16, S17, S18, S19, S20, S21, S22, S23, S24, S25, S26, S27, S28]
+
+  - id: P3
+    card: mom_v1
+    doc: >-
+      P1 with spare capacity (40 slots, 10 crore of cash): every ranked candidate, S05-S28, is taken at 4854; S29 is
+      still not, because an unrankable security is not a candidate. r5.5's construct admitted missing ranks after
+      the ranked ones whenever a slot was free, so S29 would have entered the model portfolio.
+    params: {notional_capital: 10000000, risk_to_stop_pct: 0.005, max_position_pct: 0.05, band_fno: 0.25, band_cash: 0.45}
+    names: 32
+    close: 100
+    cash: 100000000
+    max_positions: 40
+    held: []
+    features: {from: P1}
+    overrides: {from: P1}
+    expect:
+      entry_count: 24
+      entry_qty: 4854
+      status:
+        unrankable: [S29]
+        taken: [S05, S06, S07, S08, S09, S10, S11, S12, S13, S14, S15, S16, S17, S18, S19, S20, S21, S22, S23, S24, S25, S26, S27, S28]
+
+  - id: P4
+    card: ltqv_v1
+    doc: >-
+      34 names, capacity 2, model cash 10 lakh. S01 is a bank (an excluded sector) and S02 is not market-eligible:
+      not in the universe. The scoring population is S03-S34 (32 names, so one missing value still leaves 31 >= 30
+      contributors). S33's auditor-resignation input is missing (fail): G6 FAILS. S31's debt/equity is missing
+      (exclude): G4 is EXCLUDED. S32 has two penalised secondary inputs missing (roce_stability,
+      ev_ebitda_vs_sector): each composite still has enough inputs, so it ranks second, and confidence falls two
+      bands to low - the model portfolio takes it, but it is recorded, not shown. S34's ev_ebitda_vs_sector is
+      conflicted: a penalised input that is also used in ranking lowers ONE band (r5.5 lowered two), so S34 is
+      medium and published. Sizing: target = min(1e7 x 0.01 / 0.25, 1e7 x 0.05) = 4,00,000; hard cap = min(5,00,000,
+      allotted 4,00,000); qty = min(floor(400000 / 1000) = 400, floor(400000 / 1050) = 380) = 380; tranche 1 =
+      floor(0.3334 x 380) = 126. S03-S30 are no_capacity.
+    params: {notional_capital: 10000000, target_vol_contribution: 0.01, max_position_pct: 0.05}
+    names: 34
+    close: 1000
+    cash: 1000000
+    max_positions: 2
+    held: []
+    features:
+      operating_history_years: 10
+      roce_3y_avg: [0.15, 0.005]
+      roce_hy_ttm: 0.2
+      roce_5y_trend: [0, 0.001]
+      roce_stability: [0, 0.01]
+      cfo_pat_3y: [0.7, 0.01]
+      debt_equity: [1.0, -0.01]
+      interest_coverage: [3, 0.1]
+      positive_revenue_growth_years_5y: {floor: [0, 0.125]}
+      exceptional_frequency: [0.5, -0.01]
+      market_cap: [5000, 100]
+      earnings_yield_ttm: 0.05
+      ey_median_5y: 0.04
+      ey_vs_own_5y_median: [1.0, 0.01]
+      ev_ebitda_vs_sector: [1.0, -0.01]
+      earnings_yield_spread: [0, 0.001]
+      realised_vol_1y: 0.25
+      promoter_pledge_pct: 0
+      auditor_resignation_5y: false
+      forensic_flag_count: 0
+      forensic_coverage_pct: 0.9
+      surveillance_stage: none
+    overrides:
+      S01: {_sector: banks}
+      S02: {_eligible: false}
+      S34: {ev_ebitda_vs_sector: {state: conflicted, value: 0.66}}
+      S33: {auditor_resignation_5y: {state: missing}}
+      S32: {roce_stability: {state: missing}, ev_ebitda_vs_sector: {state: missing}}
+      S31: {debt_equity: {state: missing}}
+    expect:
+      entries: [[S34, 380], [S32, 380]]
+      published: [S34]
+      tranche_1: {S34: 126, S32: 126}
+      status:
+        not_in_universe: [S01, S02]
+        failed: [S33]
+        excluded: [S31]
+        taken: [S32, S34]
+        no_capacity: [S03, S04, S05, S06, S07, S08, S09, S10, S11, S12, S13, S14, S15, S16, S17, S18, S19, S20, S21, S22, S23, S24, S25, S26, S27, S28, S29, S30]
+      confidence: {S34: medium, S32: low}

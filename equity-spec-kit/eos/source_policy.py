@@ -10,7 +10,7 @@ class PolicyError(Exception):
 
 
 def load(path=None, registry=None):
-    p = yaml.safe_load(open(path or os.path.join(KIT, "policies", "source_policy.yaml")))
+    p = yaml.safe_load(open(path or os.path.join(KIT, "policies", "source_policy.yaml"), encoding="utf-8"))
     reg = registry or load_registry()
     day = dt.date(2020, 1, 1)
     for sid, s in p["sources"].items():

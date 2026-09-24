@@ -33,7 +33,7 @@ def ist(s):
 
 
 def load_registry():
-    return yaml.safe_load(open(os.path.join(KIT, "registry.yaml")))
+    return yaml.safe_load(open(os.path.join(KIT, "registry.yaml"), encoding="utf-8"))
 
 
 def run_cutoffs(day, registry=None):

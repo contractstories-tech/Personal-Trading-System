@@ -1,0 +1,3 @@
+# Everything the execution contract needs, pinned (r5.6). Install with:  python -m pip install -r requirements-dev.txt
+-r requirements.txt
+pytest==9.1.1

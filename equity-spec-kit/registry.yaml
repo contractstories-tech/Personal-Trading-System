@@ -3,11 +3,16 @@
 # closure), not this whole file; every entry carries its own version; evaluation semantics are normative
 # and versioned; `substitute` and `next_executable_session` are removed; cutoffs are typed timestamp;
 # the momentum initial stop uses ATR at the signal; ROCE, rights and window conventions are corrected.
+# 3.1.0 (r5.6, the review of r5.5): evaluation semantics 1.1.0 (an unrankable security is never a candidate;
+# ranking inputs resolve by their unknown behaviour; conflicted inputs rank with their primary value; each input
+# lowers confidence at most once); session_policy 1.0.0 (muhurat is a real trading session, excluded by platform
+# policy); a card's closure now holds only the enums its expressions and enum-typed features use, and the blocks
+# its features declare in depends_on (adding a weekday no longer re-pins every card).
 # Single owner of: feature metadata, expression functions, enums, strategy classes, evaluation triggers,
 # evaluation semantics, window conventions, benchmarks, sizing methods, runtime-state ownership, sector
 # codes, void-event predicates, security identity and the corporate-action policy.
 
-registry_version: 3.0.0
+registry_version: 3.1.0
 
 # Expression types: num, bool, date, timestamp, qty (integer shares), enum:<name>
 # Enum literals in expressions are ALWAYS namespaced: surveillance_stage.none
@@ -33,12 +38,13 @@ enums:
   weekday: [mon, tue, wed, thu, fri]
   calibration_statistic: [quantile]
   calibration_sampling: [pooled_entry_sessions]
+  session_type: [normal, muhurat, special_preopen, holiday, closure]
 
 # ------------------------------------------------------------------ evaluation semantics (normative)
 # How a card's expressions are evaluated. Versioned; part of every card's closure. The executable definition
 # is reference_engine.py, fixed by golden/card_cases.yaml.
 evaluation_semantics:
-  version: 1.0.0
+  version: 1.1.0
   arithmetic: "Decimal. Gate, exit and filter inputs are quantised to 9 decimal places (ROUND_HALF_EVEN), then compared exactly with the card's literals: two feature builds that differ only by floating-point summation order (0.6999999999999998 vs 0.7000000000000001) reach the same decision"
   non_known: "missing, stale, conflicted and not_applicable are 'non-known'. out_of_domain resolves by the feature's declared outcome"
   gates: >-
@@ -48,7 +54,10 @@ evaluation_semantics:
     (5) a non-known input whose behaviour is penalise -> UNKNOWN; (6) otherwise every input is known and the
     expression evaluates to PASS or FAIL. Gates therefore never combine unknowns logically.
     A composite referenced by a gate carries the inputs of the composite.
-  candidacy: "a security is a candidate when every gate is PASS, or UNKNOWN on a gate with unknown_blocks false"
+  candidacy: >-
+    a security is a candidate when it is in the candidates after universe filters, every gate is PASS or UNKNOWN on a
+    gate with unknown_blocks false, and - in a rank_and_gate card - it has a rank (see ranking). A candidate enters the
+    model portfolio within capacity whatever its data_confidence: confidence decides only whether the claim is shown
   exits: >-
     Kleene three-valued logic over the expression (AND is FALSE if any operand is FALSE, TRUE if all are TRUE;
     OR is TRUE if any operand is TRUE, FALSE if all are FALSE; otherwise UNKNOWN; a comparison with a
@@ -58,22 +67,54 @@ evaluation_semantics:
   persist: "TRUE iff cond is TRUE on the last n evaluable units; UNKNOWN if any of them is UNKNOWN or fewer than n exist; FALSE otherwise"
   universe_filters: "FALSE removes the security from the candidates and from the scoring population; UNKNOWN removes it from the candidates only"
   review_triggers: "shown in monitoring; never trade in a model portfolio; every review-trigger occurrence is counted in the validation report"
+  publication: >-
+    a claim is published when the model portfolio takes the candidate (its size-dependent checks pass at model size,
+    and a slot and cash remain in capacity order) and its data_confidence is at least publish_minimum. A candidate the
+    model cannot take is recorded with its reason (size_check_failed, no_capacity) and not published, so what is
+    recommended is what is measured. The executable definition is reference_engine.run_pipeline, fixed by
+    golden/pipeline_cases.yaml
   weekly: >-
     weekly_eod with weekday W, and an exit with cadence weekly and weekday W, evaluate on the last executable
     session of each ISO week falling on or before W; a week with no such session is skipped
-  confidence: "each penalised input that is not known lowers data_confidence one band; below publish_minimum the claim is recorded but not shown"
-  ranking: "rank_and_gate scores the population before gating; a missing rank orders after every ranked claim; ties within tie_tolerance break on higher market cap, then ISIN"
+  confidence: >-
+    data_confidence starts at confidence_policy.start and drops one band for each card feature that is EITHER a
+    penalised input that is not known, OR a conflicted input used in ranking - at most one band per feature, however
+    many of these it is. Below publish_minimum the claim is recorded but not shown; the model portfolio still takes it
+  ranking: >-
+    rank_and_gate scores the population before gating. A ranking input is a feature under z() in the ranking
+    expression or an input of a composite it uses. Each resolves: known -> its value; conflicted -> its primary
+    value (and it lowers confidence); otherwise by its effective unknown behaviour - fail or exclude -> the security
+    has no rank; penalise -> the input is left out of its composite, which needs min_inputs_known inputs, or the
+    security has no rank if the input is a direct z() term; out_of_domain with outcome fail -> no rank, with outcome
+    drop -> as penalise. A security with no rank is UNRANKABLE: it is not a candidate and is recorded with its
+    reason; it is never admitted after ranked claims. Z-scores use the known and conflicted values of the scoring
+    population. Ties within tie_tolerance break on higher market cap, then ISIN
 
 # ------------------------------------------------------------------ rolling-window conventions (normative)
 window_conventions:
-  version: 1.0.0
-  session: "an executable exchange session (trading_calendar); muhurat sessions are not units for any rolling window, and their bars are stored but not used by features"
+  version: 1.1.0
+  session: "a unit is an executable session under session_policy; every rolling window, lookback, persist and holding count is in executable sessions"
   present: "a security is present in a session when a resolved bar exists for it; a suspended or untraded session is absent"
   lookback: "X(t-k) is the value at the k-th session before t; if the security is absent there, the last present value at or before t-k within 5 sessions is used, else missing"
   returns_for_volatility: "daily log returns between two consecutive sessions in which the security is present; no multi-session gap returns"
   annualisation: "sqrt(250)"
   stdev: "sample standard deviation (divisor n-1) for volatility; population (divisor N) for z-scores and roce_stability"
   median: "even count: mean of the two middle values"
+
+# ------------------------------------------------------------------ sessions (normative platform policy; Doc 02 s4)
+session_policy:
+  version: 1.0.0
+  trading_session_types: [normal, muhurat]      # NSE trades in these; their bars are real and are stored
+  executable_session_types: [normal]            # the platform evaluates, proposes execution and counts units only here
+  muhurat: >-
+    Muhurat trading is a real NSE session (a short Diwali session, trading_calendar.session_type muhurat), and its
+    bars are ingested and stored like any other. By platform policy v1 it is not executable: it is not a unit for any
+    rolling window, lookback, persist or holding count; no evaluation runs in it; no entry, exit or stop is proposed,
+    tested or filled in it; weekly_eod and weekly exits skip it. Its price move is not lost: a return spans two
+    consecutive executable sessions, so it falls in the next executable session's return, and the exchange's own
+    prev_close for that session is the muhurat close. This is a choice, not a fact about the exchange; changing it is
+    a new session_policy version and re-pins every card
+  special_preopen: "a special pre-open session (re-listing, IPO, post-corporate-action) sets a price but is not executable"
 
 # ------------------------------------------------------------------ cross-sectional scoring (normative; Doc 02 s9)
 cross_sectional_scoring:
@@ -185,12 +226,14 @@ secondary_features: [roce_stability, positive_revenue_growth_years_5y, exception
                      ev_ebitda_vs_sector, earnings_yield_spread, market_breadth]
 
 confidence_policy:
-  version: 1.0.0
+  version: 1.1.0
   bands: [high, medium, low, insufficient]
   start: high
-  lower_one_band_for_each: [penalised input not known, conflicted input used for ranking]
+  version_note: "1.1.0 (r5.6): at most one band per feature; confidence never changes candidacy or the model portfolio"
+  lower_one_band_for_each: "card feature that is a penalised input not known OR a conflicted input used in ranking (once per feature)"
   publish_minimum: medium          # below this, the claim is recorded but not shown as a recommendation
   ranking_effect: none             # confidence never changes a score or a rank
+  model_portfolio_effect: none     # a candidate enters the model portfolio within capacity whatever its confidence
 
 # ------------------------------------------------------------------ vocabularies
 benchmarks: [NIFTY_500_TRI, NIFTY_200_TRI, NIFTY_200_QUALITY_30_TRI, NIFTY_200_MOMENTUM_30_TRI]
@@ -255,6 +298,8 @@ valuation_transformative_actions: {version: 1.0.0, actions: [demerger, capital_r
 
 # ------------------------------------------------------------------ features
 # Formulas are normative text; reference_features.py implements each, fixed by golden/feature_cases.yaml.
+# depends_on names any other registry block a formula reads; it puts that block in the closure of every card
+# using the feature (and only theirs).
 features:
   operating_history_years:   {version: 1.0.0, type: qty, series: none, cadence: annual, default_unknown: exclude,
                               formula: "consecutive fiscal years, ending with the latest FY usable at the cutoff, each with a complete canonical P&L (revenue, pbt, tax, pat_owners full year)"}
@@ -295,6 +340,7 @@ features:
                               formula: "sum of the latest 4 contiguous quarters' pat_underlying / market_cap",
                               domain: "not inside a valuation blackout (CA policy)", out_of_domain: drop}
   ey_median_5y:              {version: 1.0.0, type: num, series: raw, cadence: daily, default_unknown: exclude,
+                              depends_on: [valuation_transformative_actions],
                               formula: "median of the stored daily earnings_yield_ttm over the last 1250 sessions, excluding blackout sessions and sessions on or before the latest valuation_transformative_actions ex-date",
                               domain: ">= 750 known values in window", out_of_domain: drop}
   ey_vs_own_5y_median:       {version: 1.0.0, type: num, series: raw, cadence: daily, default_unknown: exclude,
