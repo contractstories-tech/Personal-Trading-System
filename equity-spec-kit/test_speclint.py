@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression suite for speclint v3. Every defect found in any review round is a case here.
+"""Regression suite for speclint v4. Every defect found in any review round is a case here.
 
 Run either way:
     python3 test_speclint.py        (prints each case; exit 0 = all pass)
@@ -12,7 +12,7 @@ import copy, hashlib, io, json, os, sys
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from speclint import lint, load_yaml, sha256_file, StrictLoader, lint_paths  # noqa: E402
+from speclint import lint, load_yaml, sha256_file, StrictLoader, lint_paths, closure_sha256  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REG_PATH = os.path.join(HERE, "registry.yaml")
@@ -39,6 +39,11 @@ def pop(path):
 
 def app(path, value):
     return lambda c: at(c, path).append(value)
+
+
+def status(st):
+    """Status is not a card field (r5.5): the case supplies the lifecycle status the card is linted at."""
+    return lambda c: c.__setitem__("__status__", st)
 
 
 def seq(*fns):
@@ -90,7 +95,7 @@ CASES = [
     ("rewrites the immutable fill", B, setp(["stop", "initial"], "entry_fill * (1 - 2.5 * atr_pct_20)"), "entry_fill"),
     ("stop evaluation order unstated", B, pop(["stop", "evaluation_order"]), "evaluation_order"),
     ("exit cadence dropped (r4 X3 regression)", B, pop(["exit_rules", 2, "cadence"]), "cadence"),
-    ("CALIBRATE left at shadow", B, setp(["status"], "shadow"), "CALIBRATE"),
+    ("CALIBRATE left at shadow", B, status("shadow"), "CALIBRATE"),
     ("TTL without a unit", A, setp(["lifecycle", "signal_ttl"], {"value": 30}), "unit"),
     ("enum compared with a number", A, setp(["gates", 7, "expr"], "surveillance_stage >= 2"), "compare"),
     ("boolean gate that is really a number", A, setp(["gates", 1, "expr"], "roce_3y_avg * 2"), "boolean"),
@@ -106,7 +111,7 @@ CASES = [
     ("evaluation schedule removed", B, pop(["evaluation"]), "evaluation"),
     ("revised_formula as prose", A, setp(["sizing", "revised_formula"], "same_formula_at_tranche_date"), "unresolved identifier"),
     # ---------------- rounds 20, 22 and the audit ----------------
-    ("production with OPEN sizing", A, setp(["status"], "production"), "OPEN"),
+    ("production with OPEN sizing", A, status("production"), "OPEN"),
     ("unknown executable-looking section", A, setp(["execution"], {"broker": "place_order"}), "unknown field 'execution'"),
     ("invalid universe base", A, setp(["universe", "base"], "whole_world"), "universe.base"),
     ("invented sector code", A, app(["universe", "exclude_sectors"], "bananas"), "bananas"),
@@ -126,14 +131,14 @@ CASES = [
     ("recheck failure behaviour missing", A, pop(T2 + ["recheck_failure"]), "recheck_failure"),
     ("retirement as free prose", A, setp(["retirement"], {"rule": "stop when it feels wrong"}), "retirement"),
     ("arbitrary strategy class", A, setp(["strategy_class"], "vibes"), "strategy_class"),
-    ("registry hash mismatch", A, setp(["registry", "sha256"], "0" * 64), "sha256"),
-    ("registry version mismatch", A, setp(["registry", "version"], "1.1.0"), "registry.version"),
+    ("registry closure mismatch", A, setp(["registry", "closure_sha256"], "0" * 64), "closure_sha256"),
+    ("registry major version mismatch", A, setp(["registry", "version"], "2.2.0"), "registry.version"),
     ("bare enum literal", A, setp(["gates", 7, "expr"], "surveillance_stage == none"), "namespaced"),
     ("enum value from the wrong enum", A, setp(["gates", 7, "expr"], "surveillance_stage == surveillance_stage.session"), "not a value"),
     ("gate_only with a ranking", A, setp(["selection_method"], "gate_only"), "gate_only"),
     ("rank_and_gate without ranking", B, pop(["ranking"]), "requires ranking"),
     ("unimplemented data resolution above experimental", A,
-     seq(setp(["status"], "shadow"), setp(["strategy_class"], "intraday"), setp(["data_resolution"], "intraday_1m")), "not implemented"),
+     seq(status("shadow"), setp(["strategy_class"], "intraday"), setp(["data_resolution"], "intraday_1m")), "not implemented"),
     ("calibration without declared quantile", B, pop(["params", "band_fno", "calibration", "q"]), "q"),
     ("calibration on the holdout", B, setp(["params", "band_fno", "calibration", "period"], "all"), "period"),
     ("AI inputs declared but not permitted", A, setp(["ai_inputs"], {"permitted": False, "declared_features": ["roce_3y_avg"]}), "ai_inputs"),
@@ -149,17 +154,56 @@ CASES = [
      setp(["proposed_execution_rule", "target_qty"], "floor(target_value / entry_ref)"), "hard_cap_value"),
     ("revised_target_qty not bounded by the hard cap", A,
      setp(["proposed_execution_rule", "revised_target_qty"], "floor(revised_target_value / entry_ref)"), "hard_cap_value"),
-    ("code does not belong to its lineage", A, setp(["lineage"], "momentum"), "lineage"),
+    ("code does not belong to its lineage", A, setp(["lineage", "code"], "momentum"), "lineage"),
     ("lineage missing", A, pop(["lineage"]), "lineage"),
     ("retired as_of_ts-style single cutoff identifier", A,
      setp(["gates", 1, "expr"], "roce_3y_avg >= 0.15 AND as_of_ts > 0"), "unresolved identifier"),
+    # ---------------- r5.5: the independent audit of r5.4 (each accepted by the r5.4 linter) ----------------
+    ("B2 undefined 'substitute' on a material input", A, setp(["unknown_overrides", "roce_3y_avg"], "substitute"), "substitute"),
+    ("B2 'substitute' on momentum's blocking delivery input", B,
+     setp(["unknown_overrides", "delivery_pct_20d_avg"], "substitute"), "substitute"),
+    ("B2 waivable gate reading material inputs through a composite", A,
+     seq(app(["gates"], {"code": "G10", "expr": "quality_composite > 0", "unknown_blocks": False}),
+         app(T1 + ["recheck_gates"], "G10")), "material input"),
+    ("B2 hard cap written as max(): a floor, not a ceiling", B,
+     setp(["proposed_execution_rule", "target_qty"], "max(floor(target_value / entry_ref), floor(hard_cap_value / entry_high))"),
+     "hard_cap_value"),
+    ("B2 hard cap mentioned but ignored", A,
+     setp(["proposed_execution_rule", "target_qty"], "floor(target_value / entry_ref) + floor(0 * hard_cap_value)"), "hard_cap_value"),
+    ("B2 hard cap at the reference price, not the worst fill", A,
+     setp(["proposed_execution_rule", "target_qty"], "min(floor(target_value / entry_ref), floor(hard_cap_value / entry_ref))"),
+     "hard_cap_value"),
+    ("B2 entry price read from the next session", B,
+     setp(["proposed_execution_rule", "entry_ref"], "close_raw(next_executable_session(signal_date))"), "next_executable_session"),
+    ("B2 gate reads a price two sessions back through nesting", B,
+     setp(["gates", 2, "expr"], "close_raw(prev_session(prev_session(eval_date))) > 0"), "not permitted"),
+    ("B2 open_raw of a non-evaluation date", B, setp(["exit_rules", 0, "expr"], "open_raw(entry_basis) < stop_in_force"), "open_raw"),
+    ("A2 weekly exit without a weekday", B, pop(["exit_rules", 2, "weekday"]), "weekday"),
+    ("A2 daily exit with a weekday", B, setp(["exit_rules", 1, "weekday"], "fri"), "daily exit"),
+    ("A2 invalid on_out_of_domain", A, setp(["exit_rules", 0, "on_out_of_domain"], "ignore"), "on_out_of_domain"),
+    ("A3 construction missing", A, pop(["construction"]), "construction"),
+    ("A3 rank_and_gate card filling capacity by earliest signal", B,
+     setp(["construction", "capacity_order"], "earliest_signal"), "rank"),
+    ("A3 max_positions OPEN at shadow", B,
+     seq(status("shadow"), setp(["params", "band_fno", "value"], 0.3), setp(["params", "band_cash", "value"], 0.4),
+         setp(["sizing", "params"], {"notional_capital": 1e7, "risk_to_stop_pct": 0.005, "max_position_pct": 0.05})),
+     "max_positions"),
+    ("B7 status written into the card", A, setp(["status"], "production"), "unknown field 'status'"),
+    ("A4 lineage deriving from itself", A, setp(["lineage", "derived_from"], ["ltqv"]), "itself"),
+    ("C9 governance void event without its threshold", A, pop(["void_parameters"]), "void_parameters"),
+    ("C9 void parameter for an unused event", B, setp(["void_parameters"], {"governance_event": {"promoter_pledge_pct": 0.2}}),
+     "does not use"),
+    ("B8 calibration sampling unstated", B, pop(["params", "band_fno", "calibration", "sampling"]), "sampling"),
+    ("H9 cutoff timestamp compared with a number", A,
+     setp(["gates", 1, "expr"], "roce_3y_avg >= 0.15 AND disclosure_cutoff_ts > 0"), "compare"),
 ]
 
 
 def check_case(name, card, fn, frag):
     c = copy.deepcopy(card)
     fn(c)
-    errs = lint(c, REG, REG_SHA, SCHEMA)
+    st = c.pop("__status__", "experimental")
+    errs = lint(c, REG, SCHEMA, st)
     return bool(errs) and any(frag in e for e in errs), errs
 
 
@@ -176,8 +220,10 @@ def run(verbose=True):
              ("impossible dates and times rejected, real ones accepted", _formats_are_real()),
              ("duplicate YAML key rejected", _dup_yaml_rejected()),
              ("duplicate strategy code across cards rejected", _dup_code_rejected()),
-             ("real card ltqv_v1 passes", not lint(A, REG, REG_SHA, SCHEMA)),
-             ("real card mom_v1 passes", not lint(B, REG, REG_SHA, SCHEMA))]
+             ("A4 unrelated registry edits leave card pins intact; used-entry edits break them", _closure_is_scoped()),
+             ("B7 lifecycle records validate, chain, and give each card its status", _lifecycle_records()),
+             ("real card ltqv_v1 passes", not lint(A, REG, SCHEMA)),
+             ("real card mom_v1 passes", not lint(B, REG, SCHEMA))]
     for name, ok in extra:
         if verbose:
             print(f"{'ok  ' if ok else 'FAIL'}  {name}")
@@ -193,12 +239,47 @@ def _placeholder_blocked():
     reg = copy.deepcopy(REG)
     reg["functions"]["impact_cost"]["status"] = "placeholder"
     c = copy.deepcopy(B)
-    c["status"] = "production"
     c["params"]["band_fno"]["value"], c["params"]["band_cash"]["value"] = 0.25, 0.45
     c["sizing"]["params"].update({"notional_capital": 1e6, "risk_to_stop_pct": 0.005, "max_position_pct": 0.05})
-    # registry pin is checked against REG_SHA; the placeholder rule must still fire on its own
-    errs = lint(c, reg, REG_SHA, SCHEMA)
+    c["construction"]["max_positions"] = 20
+    # the closure pin now differs as well; the placeholder rule must still fire on its own
+    errs = lint(c, reg, SCHEMA, "production")
     return any("placeholder" in e for e in errs)
+
+
+def _closure_is_scoped():
+    """Audit A4: r5.4 pinned the whole registry file, so any edit re-versioned every card and, under the
+    'changed card needs fresh holdout' rule, would have burned every holdout."""
+    reg = copy.deepcopy(REG)
+    reg["features"]["brand_new_swing_feature"] = {"version": "1.0.0", "type": "num", "series": "raw", "cadence": "daily",
+                                                  "default_unknown": "exclude", "formula": "for another strategy"}
+    reg["sector_codes"].append("space_tourism")
+    reg["deprecated"].append("some_old_name")
+    unrelated_ok = closure_sha256(A, reg) == closure_sha256(A, REG) and closure_sha256(B, reg) == closure_sha256(B, REG)
+    reg2 = copy.deepcopy(REG)
+    reg2["features"]["roce_3y_avg"]["formula"] += " (edited)"
+    ltqv_breaks = closure_sha256(A, reg2) != closure_sha256(A, REG)
+    mom_unaffected = closure_sha256(B, reg2) == closure_sha256(B, REG)
+    reg3 = copy.deepcopy(REG)
+    reg3["evaluation_semantics"]["exits"] += " (edited)"
+    semantics_break_both = closure_sha256(A, reg3) != closure_sha256(A, REG) and closure_sha256(B, reg3) != closure_sha256(B, REG)
+    return unrelated_ok and ltqv_breaks and mom_unaffected and semantics_break_both
+
+
+def _lifecycle_records():
+    import tempfile
+    from speclint import load_transitions, lifecycle_status
+    recs, errs = load_transitions(os.path.join(HERE, "lifecycle"))
+    if errs:
+        print("   lifecycle record errors:", errs[:3])
+        return False
+    shipped = all(lifecycle_status(c, sha256_file(os.path.join(HERE, "strategies", f"{c}.yaml")), recs)[0] == "experimental"
+                  for c in ("ltqv_v1", "mom_v1"))
+    # a broken chain is reported: experimental -> shadow for a card never registered as experimental
+    bad = [dict(recs[0], transition_id="x", from_status="experimental", to_status="shadow",
+                decided_at="2026-09-01T10:00:00+05:30", _file="x.json")]
+    chain_caught = bool(lifecycle_status(recs[0]["strategy_code"], recs[0]["card_sha256"], bad)[2])
+    return shipped and chain_caught
 
 
 def _formats_are_real():
@@ -219,12 +300,17 @@ def _other_schemas_enforce_their_rules():
     from speclint import schema_errors
     h, ts = "a" * 64, "2026-09-21T20:00:00+05:30"
     life = sch("strategy_lifecycle_transition.schema.json")
+    decl = {"derived_from": [], "sealed_results_seen": []}
     base = {"transition_id": "t", "strategy_code": "ltqv_v1", "lineage": "ltqv", "card_sha256": h,
             "from_status": "none", "to_status": "experimental", "decided_by": "harsh",
-            "decided_at": ts, "reason": "initial registration of the card", "evidence": {"linter_report_sha256": h}}
+            "decided_at": ts, "reason": "initial registration of the card",
+            "evidence": {"linter_report_sha256": h, "holdout_exposure_declaration": decl}}
     checks = [
         ("none->production rejected", bool(schema_errors({**base, "to_status": "production"}, life, life))),
         ("none->experimental accepted", not schema_errors(base, life, life)),
+        # audit A4: registration must declare inherited holdout exposure
+        ("none->experimental without a holdout-exposure declaration rejected",
+         bool(schema_errors({**base, "evidence": {"linter_report_sha256": h}}, life, life))),
         ("experimental->shadow without a validation report rejected",
          bool(schema_errors({**base, "from_status": "experimental", "to_status": "shadow",
                              "evidence": {"backtest_run_ids": ["r"], "holdout_run_id": "h",
@@ -252,7 +338,9 @@ def _other_schemas_enforce_their_rules():
     ok_run = {"run_id": "r1", "run_type": "backtest", "trading_date": "2026-09-21",
               "disclosure_cutoff_ts": ts, "market_cutoff_ts": ts, "data_snapshot_id": "s",
               "data_snapshot_sha256": h, "package_digest": h,
-              "strategy_cards": [{"code": "ltqv_v1", "version": "1", "sha256": h, "status_at_run": "experimental"}],
+              "strategy_cards": [{"code": "ltqv_v1", "version": "1", "sha256": h, "status_at_run": "experimental",
+                                  "registry_closure_sha256": h, "lifecycle_transition_id": "0001"}],
+              "evaluation_semantics_version": "1.0.0",
               "registry_sha256": h, "source_policy_sha256": h, "sector_map_sha256": h,
               "trading_calendar_sha256": h, "market_universe_policy_sha256": h, "cost_schedule_sha256": h,
               "tax_schedule_sha256": h, "corporate_action_policy": "standard_equity_ca_policy_v2",
@@ -268,6 +356,13 @@ def _other_schemas_enforce_their_rules():
                 bool(schema_errors({k: v for k, v in ok_run.items() if k != "holdout_access"}, run, run))),
                ("sealed holdout without a ledger entry rejected",
                 bool(schema_errors({**ok_run, "holdout_access": "sealed_evaluation"}, run, run)))]
+    led = sch("holdout_ledger.schema.json")
+    entry = {"entry_id": "e1", "card_version": "1", "card_sha256": h, "exposed_from": "2020-01-01",
+             "exposed_to": "2022-12-31", "kind": "inherited", "run_id": "r", "recorded_at": ts}
+    checks += [("inherited ledger exposure without its source lineage rejected",
+                bool(schema_errors({"lineage": "momx", "entries": [entry]}, led, led))),
+               ("inherited ledger exposure with its source lineage accepted",
+                not schema_errors({"lineage": "momx", "entries": [{**entry, "source_lineage": "mom"}]}, led, led))]
     failed = [n for n, ok in checks if not ok]
     if failed:
         print("   schema-contract failures:", failed)
@@ -299,8 +394,8 @@ def test_every_regression_case_is_caught():
 
 
 def test_real_cards_pass():
-    assert lint(A, REG, REG_SHA, SCHEMA) == []
-    assert lint(B, REG, REG_SHA, SCHEMA) == []
+    assert lint(A, REG, SCHEMA) == []
+    assert lint(B, REG, SCHEMA) == []
 
 
 # ---------------- property test: malformed shapes never crash (audit F09/F11) ----------------
@@ -319,7 +414,7 @@ def fuzz_shapes():
                 at(c, path[:-1])[path[-1]] = bad
                 checked += 1
                 try:
-                    errs = lint(c, REG, REG_SHA, SCHEMA)
+                    errs = lint(c, REG, SCHEMA)
                     assert isinstance(errs, list)
                 except Exception as e:
                     crashes.append((path, repr(bad), f"{type(e).__name__}: {e}"))

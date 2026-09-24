@@ -1,10 +1,9 @@
-schema_version: 5
+schema_version: 6
 code: ltqv_v1
 strategy_class: fundamental_long_term
-version: 1.0.0-prevalidation.7
-lineage: ltqv
-status: experimental
-registry: {version: 2.2.0, sha256: 2d531e2a71aee5c9ed9e00c4ac9534dddb4c7d25b4703e3b2b505483087aa128}
+version: 1.0.0-prevalidation.8
+lineage: {code: ltqv, derived_from: []}
+registry: {version: 3.0.0, closure_sha256: d8552f524503fa35d79a0878f6da147a83fe7ac74d98417a5bad54305b35beb0}
 
 hypothesis: >
   Businesses that earn high and stable returns on capital, convert profits
@@ -112,6 +111,13 @@ sizing:
   formula: "min(notional_capital * target_vol_contribution / realised_vol_1y, notional_capital * max_position_pct)"
   revised_formula: "min(notional_capital * target_vol_contribution / realised_vol_1y, notional_capital * max_position_pct)"
 
+# Model-portfolio construction is part of the hypothesis (Doc 04 s3): pre-registered once, before the first
+# design evaluation, and never set from personal circumstances. Personal sizing lives in portfolio_policy.yaml.
+construction:
+  max_positions: OPEN
+  capacity_order: rank
+  residual_cash: uninvested
+
 proposed_execution_rule:
   scope: simulation_and_plan_only
   entry_ref: "close_raw(signal_date)"
@@ -162,9 +168,11 @@ review_triggers:
   - "earnings_yield_ttm <= 0"
   - "forensic_flag_count >= 1"
 
-corporate_action_policy: standard_equity_ca_policy_v2
+corporate_action_policy: standard_equity_ca_policy_v3
 ca_state_held: [entry_ref, entry_high, tranche_limit, target_qty, revised_target_qty, current_earmark_qty]
 signal_void_on: [governance_event, surveillance_entry, transformative_ca]
+void_parameters:
+  governance_event: {promoter_pledge_pct: 0.15}
 
 benchmark: NIFTY_500_TRI
 secondary_benchmark: NIFTY_200_QUALITY_30_TRI

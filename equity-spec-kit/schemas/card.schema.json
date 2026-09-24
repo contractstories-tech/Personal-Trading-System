@@ -1,7 +1,7 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
  "$id": "card.schema.json",
- "title": "Strategy card v5",
+ "title": "Strategy card v6",
  "type": "object",
  "additionalProperties": false,
  "required": [
@@ -10,7 +10,6 @@
   "strategy_class",
   "lineage",
   "version",
-  "status",
   "registry",
   "hypothesis",
   "trade_direction",
@@ -27,6 +26,7 @@
   "size_dependent_checks",
   "lifecycle",
   "sizing",
+  "construction",
   "proposed_execution_rule",
   "exit_rules",
   "cooldown",
@@ -42,7 +42,7 @@
  "properties": {
   "schema_version": {
    "type": "integer",
-   "const": 5
+   "const": 6
   },
   "code": {
    "type": "string",
@@ -56,22 +56,19 @@
    "type": "string",
    "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.]+)?$"
   },
-  "status": {
-   "type": "string"
-  },
   "registry": {
    "type": "object",
    "additionalProperties": false,
    "required": [
     "version",
-    "sha256"
+    "closure_sha256"
    ],
    "properties": {
     "version": {
      "type": "string",
      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
     },
-    "sha256": {
+    "closure_sha256": {
      "type": "string",
      "pattern": "^[0-9a-f]{64}$"
     }
@@ -383,6 +380,12 @@
      "expr": {
       "type": "string",
       "minLength": 1
+     },
+     "weekday": {
+      "type": "string"
+     },
+     "on_out_of_domain": {
+      "type": "string"
      }
     }
    }
@@ -520,8 +523,63 @@
    }
   },
   "lineage": {
-   "type": "string",
-   "pattern": "^[a-z][a-z0-9_]*$"
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "code",
+    "derived_from"
+   ],
+   "properties": {
+    "code": {
+     "type": "string",
+     "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "derived_from": {
+     "type": "array",
+     "uniqueItems": true,
+     "items": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+     }
+    }
+   }
+  },
+  "construction": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "max_positions",
+    "capacity_order",
+    "residual_cash"
+   ],
+   "properties": {
+    "max_positions": {
+     "oneOf": [
+      {
+       "const": "OPEN"
+      },
+      {
+       "type": "integer",
+       "minimum": 1
+      }
+     ]
+    },
+    "capacity_order": {
+     "type": "string"
+    },
+    "residual_cash": {
+     "type": "string"
+    }
+   }
+  },
+  "void_parameters": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "additionalProperties": {
+     "type": "number"
+    }
+   }
   }
  },
  "$defs": {
@@ -569,7 +627,8 @@
       "q",
       "feature",
       "population",
-      "period"
+      "period",
+      "sampling"
      ],
      "properties": {
       "statistic": {
@@ -592,6 +651,9 @@
       "period": {
        "type": "string",
        "const": "design_only"
+      },
+      "sampling": {
+       "type": "string"
       }
      }
     }

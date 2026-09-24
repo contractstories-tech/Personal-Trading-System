@@ -1,10 +1,9 @@
-schema_version: 5
+schema_version: 6
 code: mom_v1
 strategy_class: momentum
-version: 1.0.0-prevalidation.7
-lineage: mom
-status: experimental
-registry: {version: 2.2.0, sha256: 2d531e2a71aee5c9ed9e00c4ac9534dddb4c7d25b4703e3b2b505483087aa128}
+version: 1.0.0-prevalidation.8
+lineage: {code: mom, derived_from: []}
+registry: {version: 3.0.0, closure_sha256: 2f5190e69e75396884c31561324a22fe6116d486dc498c8844c833918f0ef063}
 
 hypothesis: >
   Cross-sectional relative strength persists over 3 to 12 month horizons
@@ -53,11 +52,13 @@ params:
   band_fno:
     value: CALIBRATE
     calibration: {statistic: quantile, q: 0.25, feature: delivery_pct_20d_avg,
-                  population: {is_fno_eligible: true}, period: design_only}
+                  population: {is_fno_eligible: true}, period: design_only,
+                  sampling: pooled_entry_sessions}
   band_cash:
     value: CALIBRATE
     calibration: {statistic: quantile, q: 0.25, feature: delivery_pct_20d_avg,
-                  population: {is_fno_eligible: false}, period: design_only}
+                  population: {is_fno_eligible: false}, period: design_only,
+                  sampling: pooled_entry_sessions}
 
 composites: {}
 
@@ -83,13 +84,20 @@ lifecycle:
 sizing:
   method: stop_risk_budget
   params: {notional_capital: OPEN, risk_to_stop_pct: OPEN, max_position_pct: OPEN}
-  formula: "min(notional_capital * risk_to_stop_pct / (2.5 * atr_pct_20), notional_capital * max_position_pct)"
+  formula: "min(notional_capital * risk_to_stop_pct / (2.5 * atr_pct_at_signal), notional_capital * max_position_pct)"
+
+# Model-portfolio construction is part of the hypothesis (Doc 04 s3): pre-registered once, before the first
+# design evaluation, and never set from personal circumstances. Personal sizing lives in portfolio_policy.yaml.
+construction:
+  max_positions: OPEN
+  capacity_order: rank
+  residual_cash: uninvested
 
 proposed_execution_rule:
   scope: simulation_and_plan_only
   entry_ref: "close_raw(signal_date)"
   entry_high: "entry_ref * 1.03"
-  target_qty: "min(floor(target_value / entry_ref), min(floor(hard_cap_value / entry_high), floor(notional_capital * risk_to_stop_pct / (entry_high * 2.5 * atr_pct_20))))"
+  target_qty: "min(floor(target_value / entry_ref), min(floor(hard_cap_value / entry_high), floor(notional_capital * risk_to_stop_pct / (entry_high * 2.5 * atr_pct_at_signal))))"
   tranches:
     - n: 1
       weight: 1.0
@@ -103,13 +111,13 @@ proposed_execution_rule:
 
 stop:
   evaluation_order: test_then_update
-  initial: "entry_basis * (1 - 2.5 * atr_pct_20)"
+  initial: "entry_basis * (1 - 2.5 * atr_pct_at_signal)"
   update: "max(stop_prev, highest_close_since_entry * (1 - 2.5 * atr_pct_at_peak))"
 
 exit_rules:
   - {code: X1, cadence: daily,  expr: "close_raw(eval_date) < stop_in_force"}
   - {code: X2, cadence: daily,  expr: "persist(price_vs_dma50 < 1.0, 3, persist_unit.session)"}
-  - {code: X3, cadence: weekly, expr: "vol_adj_mom_12m < 0.30"}
+  - {code: X3, cadence: weekly, weekday: fri, expr: "vol_adj_mom_12m < 0.30"}
   - {code: X4, cadence: daily,  expr: "holding_days >= 180"}
   - {code: X5, cadence: daily,  expr: "surveillance_stage == surveillance_stage.asm_lt_2plus OR surveillance_stage == surveillance_stage.asm_st_2plus OR surveillance_stage == surveillance_stage.gsm_any"}
 
@@ -119,7 +127,7 @@ cooldown:
 
 review_triggers: []
 
-corporate_action_policy: standard_equity_ca_policy_v2
+corporate_action_policy: standard_equity_ca_policy_v3
 ca_state_held: [entry_ref, entry_high, entry_basis, highest_close_since_entry,
                 stop_prev, stop_in_force, target_qty, current_earmark_qty]
 signal_void_on: [band_close_event, surveillance_entry, transformative_ca]

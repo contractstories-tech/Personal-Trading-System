@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
-"""speclint v3 - strategy-card compiler (Document 01 r5, s8).
+"""speclint v4 - strategy-card compiler (Document 01 s8).
 
 Stage 1  closed-schema validation against schemas/card.schema.json (unknown keys are errors;
          malformed shapes produce errors, never crashes).
-Stage 2  semantic compilation against registry.yaml: registry pin by sha256, strategy class,
-         data resolution and triggers, expression grammar and types, reference integrity,
-         runtime-state assignment, corporate-action completeness, status-dependent completeness.
+Stage 2  semantic compilation against registry.yaml: registry pin by the canonical hash of the card's
+         registry CLOSURE (the entries it uses, not the whole file), strategy class, data resolution and
+         triggers, expression grammar and types, permitted date arguments (no expression can name a future
+         session), reference integrity, materiality through composites, a structural hard-cap bound,
+         runtime-state assignment, corporate-action completeness, void-event parameters, construction,
+         and status-dependent completeness.
+
+A card's status is NOT in the card (r5.5): it is the to_status of the latest lifecycle transition record in
+lifecycle/transitions/ whose card_sha256 matches the card file. A card with no record is linted as
+experimental and reported as unregistered.
 
 A PASS means a card is WELL-FORMED. It does not mean it is CORRECT: Document 04's golden
 cases establish that.
 
-Usage:  python3 speclint.py [--registry registry.yaml] [--schema schemas/card.schema.json] card.yaml ...
+Usage:  python3 speclint.py [--registry registry.yaml] [--schema schemas/card.schema.json] [--closure] card.yaml ...
+        --closure prints each card's current registry closure hash (to pin it after a deliberate change)
 Exit:   0 = all pass, 1 = violations, 2 = unreadable registry/schema.
 """
 import hashlib, json, math, os, re, sys
@@ -266,12 +274,26 @@ def is_qty(t):
     return t in ("qty", "int")
 
 
+def node_src(node):
+    """Canonical text of a parsed expression node (used to check permitted arguments)."""
+    k = node[0]
+    if k in ("num", "id"):
+        return node[1]
+    if k == "call":
+        return f"{node[1]}({', '.join(node_src(a) for a in node[2])})"
+    if k == "neg":
+        return f"-{node_src(node[1])}"
+    if k == "not":
+        return f"NOT {node_src(node[1])}"
+    return f"({node_src(node[2])} {node[1]} {node_src(node[3])})"
+
+
 class Checker:
     def __init__(self, reg, card):
         self.reg, self.card = reg, card
         self.params = set((card.get("params") or {}).keys())
         self.composites = set((card.get("composites") or {}).keys())
-        self.refs = set()
+        self.refs, self.calls, self.enums = set(), set(), set()
 
     def type_of(self, node):
         kind = node[0]
@@ -285,6 +307,7 @@ class Checker:
                     raise ExprError(f"unknown enum '{ens}'")
                 if val not in [str(x) for x in self.reg["enums"][ens]]:
                     raise ExprError(f"'{val}' is not a value of enum {ens}")
+                self.enums.add(ens)
                 return f"enum:{ens}"
             self.refs.add(name)
             if name in ("true", "false"):
@@ -338,8 +361,15 @@ class Checker:
             fn = self.reg["functions"].get(name)
             if fn is None:
                 raise ExprError(f"unknown function '{name}'")
+            self.calls.add(name)
             if len(args) != len(fn["args"]):
                 raise ExprError(f"{name}() takes {len(fn['args'])} args, got {len(args)}")
+            allowed = fn.get("allowed_arguments")
+            if allowed is not None:
+                for a in args:
+                    if node_src(a) not in allowed:
+                        raise ExprError(f"{name}({node_src(a)}): argument not permitted; only {allowed} "
+                                        f"(no expression may name a session after the evaluation)")
             ats = [self.type_of(a) for a in args]
             for want, got in zip(fn["args"], ats):
                 ok = (want == got) or (want == "num" and is_num(got)) or (want == "qty" and is_qty(got))
@@ -351,8 +381,97 @@ class Checker:
         raise ExprError(f"bad node {kind}")
 
 
+# ------------------------------------------------------------------ registry closure (audit A4)
+FIELD_ENUMS = ["unknown_behaviour", "attempt_policy", "recheck_failure", "on_exhausted", "exit_execution",
+               "exit_cadence", "on_out_of_domain", "ttl_unit", "status", "direction", "trade_direction",
+               "selection_method", "capacity_order", "residual_cash", "horizon", "universe_base", "weekday",
+               "calibration_statistic", "calibration_sampling", "persist_unit"]
+GLOBAL_BLOCKS = ["evaluation_semantics", "window_conventions", "cross_sectional_scoring", "confidence_policy",
+                 "cutoff_policy", "security_identity", "valuation_transformative_actions"]
+
+
+def card_expressions(card):
+    """Every expression string in a card (for closure collection)."""
+    out = [g["expr"] for g in card.get("gates", [])] + [x["expr"] for x in card.get("size_dependent_checks", [])]
+    out += [x["expr"] for x in card.get("exit_rules", [])] + list(card.get("review_triggers", []))
+    out += list(card.get("universe", {}).get("filters", []))
+    if "ranking" in card:
+        out.append(card["ranking"]["expr"])
+    sz = card.get("sizing", {})
+    out += [sz[k] for k in ("formula", "revised_formula") if k in sz]
+    per = card.get("proposed_execution_rule", {})
+    out += [per[k] for k in ("entry_ref", "entry_high", "target_qty", "revised_target_qty") if k in per]
+    for t in per.get("tranches", []):
+        out += [t["limit"], t["qty"]]
+    st = card.get("stop") or {}
+    out += [st[k] for k in ("initial", "update") if k in st]
+    return out
+
+
+def registry_closure(card, reg):
+    """The canonical subset of the registry a card depends on. Editing anything outside it (a new feature for
+    another strategy, a comment, an unrelated sector code) cannot change what this card means, so it does not
+    change the card's pin; editing anything inside it does."""
+    chk = Checker(reg, card)
+    for src in card_expressions(card):
+        try:
+            chk.type_of(Parser(tokenize(src)).parse())
+        except ExprError:
+            pass
+    feats = set(card.get("features", []))
+    enums = set(FIELD_ENUMS) | chk.enums
+    for f in feats:
+        t = str(reg["features"].get(f, {}).get("type", ""))
+        if t.startswith("enum:"):
+            enums.add(t[5:])
+    runtime = (chk.refs | set(card.get("ca_state_held", [])) | {"hard_cap_value", "provisional_value_cr"})
+    if card.get("stop"):
+        runtime |= {"stop_in_force", "stop_prev", "highest_close_since_entry", "atr_pct_at_peak", "atr_pct_at_signal"}
+    triggers = {t["trigger"] for t in card.get("evaluation", {}).get("entry_triggers", [])}
+    triggers.add(card.get("evaluation", {}).get("risk_trigger", {}).get("trigger"))
+    closure = {
+        "features": {f: reg["features"][f] for f in sorted(feats) if f in reg["features"]},
+        "forensic_flags": reg.get("forensic_flags", {}) if feats & {"forensic_flag_count", "forensic_coverage_pct"} else {},
+        "secondary_features": sorted(feats & set(reg.get("secondary_features", []))),
+        "functions": {f: reg["functions"][f] for f in sorted(chk.calls) if f in reg["functions"]},
+        "runtime": {r: reg["runtime"][r] for r in sorted(runtime) if r in reg["runtime"]},
+        "enums": {e: reg["enums"][e] for e in sorted(enums) if e in reg["enums"]},
+        "strategy_class": reg["strategy_classes"].get(card.get("strategy_class")),
+        "data_resolution": reg["data_resolutions"].get(card.get("data_resolution")),
+        "triggers": {t: reg["triggers"][t] for t in sorted(x for x in triggers if x) if t in reg["triggers"]},
+        "sizing_method": reg["sizing_methods"].get(card.get("sizing", {}).get("method")),
+        "void_events": {v: reg["void_events"][v] for v in sorted(card.get("signal_void_on", [])) if v in reg["void_events"]},
+        "corporate_action_policy": reg["corporate_action_policies"].get(card.get("corporate_action_policy")),
+        "benchmarks": sorted(b for b in (card.get("benchmark"), card.get("secondary_benchmark")) if b in reg["benchmarks"]),
+        "sector_codes": sorted(x for x in card.get("universe", {}).get("exclude_sectors", []) if x in reg["sector_codes"]),
+    }
+    for b in GLOBAL_BLOCKS:
+        closure[b] = reg.get(b)
+    return closure
+
+
+def closure_sha256(card, reg):
+    body = json.dumps(registry_closure(card, reg), sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def _is_cap_floor(a, limits):
+    """floor(hard_cap_value / <limit>)"""
+    return (a[0] == "call" and a[1] == "floor" and len(a[2]) == 1 and a[2][0][0] == "arith" and a[2][0][1] == "/"
+            and a[2][0][2] == ("id", "hard_cap_value") and a[2][0][3][0] == "id" and a[2][0][3][1] in limits)
+
+
+def _caps_quantity(node, limits=("entry_high", "tranche_limit")):
+    """True iff node is min(...) with floor(hard_cap_value / <limit>) in its chain of min() arguments, so the
+    quantity can never exceed the cap at the worst permitted fill (audit B2: r5.4 tested a substring)."""
+    if node[0] != "call" or node[1] != "min":
+        return False
+    return any(_is_cap_floor(a, limits) or _caps_quantity(a, limits) for a in node[2])
+
+
 # ------------------------------------------------------------------ semantic stage
-def lint(card, reg, reg_sha, schema):
+def lint(card, reg, schema, status="experimental"):
+    """status comes from the card's lifecycle record (lint_paths), never from the card."""
     if not isinstance(card, dict):
         return ["card: must be a mapping"]
     E = schema_errors(card, schema, schema)
@@ -361,13 +480,15 @@ def lint(card, reg, reg_sha, schema):
     err = E.append
     en = reg["enums"]
     feats, flags, runtime = reg["features"], reg.get("forensic_flags", {}), reg["runtime"]
-    status = card["status"]
     declared = card["features"]
     dset = set(declared)
 
     # lineage: a card's code must belong to its lineage (holdout exposure is tracked per lineage)
-    if not card["code"].startswith(card["lineage"] + "_v"):
-        err(f"code '{card['code']}' does not belong to lineage '{card['lineage']}'")
+    lin = card["lineage"]["code"]
+    if not card["code"].startswith(lin + "_v"):
+        err(f"code '{card['code']}' does not belong to lineage '{lin}'")
+    if lin in card["lineage"]["derived_from"]:
+        err(f"lineage '{lin}' cannot derive from itself")
 
     # materiality: a material input may never be penalised, and never feed a waivable gate
     secondary = set(reg.get("secondary_features", []))
@@ -375,14 +496,18 @@ def lint(card, reg, reg_sha, schema):
         if b == "penalise" and f not in secondary:
             err(f"unknown_override '{f}: penalise' - '{f}' is material; its absence must block or exclude")
 
-    # registry pin
-    if card["registry"]["version"] != reg["registry_version"]:
-        err(f"registry.version {card['registry']['version']} != registry {reg['registry_version']}")
-    if card["registry"]["sha256"] != reg_sha:
-        err("registry.sha256 does not match the registry file: re-validate the card against the changed registry")
+    # registry pin: the closure, not the file
+    if card["registry"]["version"].split(".")[0] != str(reg["registry_version"]).split(".")[0]:
+        err(f"registry.version {card['registry']['version']} is not compatible with registry {reg['registry_version']}")
+    want = closure_sha256(card, reg)
+    if card["registry"]["closure_sha256"] != want:
+        err(f"registry.closure_sha256 does not match: an entry this card uses has changed (current closure {want}); "
+            f"re-validate the card, and version it if its meaning changed")
+    if status not in en["status"]:
+        err(f"status '{status}' not registered")
 
     # identity and vocabularies
-    for field, enum in (("status", "status"), ("trade_direction", "trade_direction"), ("horizon", "horizon"),
+    for field, enum in (("trade_direction", "trade_direction"), ("horizon", "horizon"),
                         ("selection_method", "selection_method")):
         if card[field] not in en[enum]:
             err(f"{field} '{card[field]}' not registered")
@@ -453,6 +578,8 @@ def lint(card, reg, reg_sha, schema):
                 for pf in cal["population"]:
                     if feats.get(pf, {}).get("type") != "bool" or pf not in dset:
                         err(f"param '{p}': population key '{pf}' must be a declared boolean feature")
+                if cal["sampling"] not in en["calibration_sampling"]:
+                    err(f"param '{p}': calibration sampling '{cal['sampling']}' not registered")
 
     # composites
     for cname, c in card["composites"].items():
@@ -489,6 +616,12 @@ def lint(card, reg, reg_sha, schema):
     for x in card["exit_rules"]:
         if x["cadence"] not in en["exit_cadence"]:
             err(f"exit {x['code']}: cadence '{x['cadence']}' invalid")
+        if x["cadence"] == "weekly" and x.get("weekday") not in en["weekday"]:
+            err(f"exit {x['code']}: a weekly exit must name its weekday (evaluation_semantics.weekly)")
+        if x["cadence"] == "daily" and "weekday" in x:
+            err(f"exit {x['code']}: a daily exit takes no weekday")
+        if x.get("on_out_of_domain", "fire") not in en["on_out_of_domain"]:
+            err(f"exit {x['code']}: on_out_of_domain '{x['on_out_of_domain']}' invalid")
     if "ranking" in card:
         add("ranking", card["ranking"]["expr"], "num")
     for f in card["universe"]["filters"]:
@@ -510,6 +643,17 @@ def lint(card, reg, reg_sha, schema):
     add("sizing.formula", s["formula"], "num")
     if "revised_formula" in s:
         add("sizing.revised_formula", s["revised_formula"], "num")
+
+    # construction (audit A3): capacity is part of the hypothesis
+    con = card["construction"]
+    if con["capacity_order"] not in en["capacity_order"]:
+        err(f"construction.capacity_order '{con['capacity_order']}' not registered")
+    elif card["selection_method"] == "gate_only" and con["capacity_order"] == "rank":
+        err("construction.capacity_order rank needs a ranking; a gate_only card uses earliest_signal")
+    elif card["selection_method"] == "rank_and_gate" and con["capacity_order"] != "rank":
+        err("construction.capacity_order: a rank_and_gate card fills scarce capacity by its rank")
+    if con["residual_cash"] not in en["residual_cash"]:
+        err(f"construction.residual_cash '{con['residual_cash']}' not registered")
 
     # proposed execution rule
     per = card["proposed_execution_rule"]
@@ -566,14 +710,31 @@ def lint(card, reg, reg_sha, schema):
             err(f"cooldown.applies_after references unknown exit '{x}'")
     if card["lifecycle"]["signal_ttl"]["unit"] not in en["ttl_unit"]:
         err("lifecycle.signal_ttl.unit invalid")
+    vp = card.get("void_parameters", {})
     for v in card["signal_void_on"]:
         if v not in reg["void_events"]:
             err(f"signal_void_on '{v}' is not a registered void event")
+            continue
+        need = set(reg["void_events"][v].get("parameters", []))
+        have = set(vp.get(v, {}))
+        if need - have:
+            err(f"void_parameters.{v} missing {sorted(need - have)} (audit C9: thresholds are declared, never borrowed by gate number)")
+        if have - need:
+            err(f"void_parameters.{v} has {sorted(have - need)}, which the event does not take")
+    for v in vp:
+        if v not in card["signal_void_on"]:
+            err(f"void_parameters.{v} given for an event the card does not use")
 
-    # hard cap: quantities must be bounded so an allowed higher fill cannot breach the cap
+    # hard cap: quantities must be bounded so an allowed higher fill cannot breach the cap - structurally
     for key in ("target_qty", "revised_target_qty"):
-        if key in per and "hard_cap_value" not in per[key]:
-            err(f"proposed_execution_rule.{key} must be bounded by hard_cap_value")
+        if key in per:
+            try:
+                ok = _caps_quantity(Parser(tokenize(per[key])).parse())
+            except (ExprError, IndexError, TypeError):
+                ok = False
+            if not ok:
+                err(f"proposed_execution_rule.{key} must be min(..., floor(hard_cap_value / entry_high or tranche_limit), ...) "
+                    f"so it is bounded by hard_cap_value at the worst permitted fill")
 
     # typecheck expressions
     chk = Checker(reg, card)
@@ -607,7 +768,8 @@ def lint(card, reg, reg_sha, schema):
         if rt and rt["owner"] == "stateful" and r in (
                 "stop_in_force", "stop_prev", "highest_close_since_entry", "atr_pct_at_peak") and st is None:
             err(f"'{r}' is stop state but the card defines no stop")
-    # a gate that waives on unknown may read only secondary features
+    # a gate that waives on unknown may read only secondary features - including through a composite
+    comps = card["composites"]
     for g in card["gates"]:
         if g["unknown_blocks"] is False:
             gchk = Checker(reg, card)
@@ -615,7 +777,10 @@ def lint(card, reg, reg_sha, schema):
                 gchk.type_of(Parser(tokenize(g["expr"])).parse())
             except ExprError:
                 continue
-            material = sorted(r for r in gchk.refs if r in feats and r not in secondary)
+            reads = set(gchk.refs)
+            for cn in gchk.refs & set(comps):
+                reads |= {i["code"] for i in comps[cn]["inputs"]}
+            material = sorted(r for r in reads if r in feats and r not in secondary)
             if material:
                 err(f"gate {g['code']} waives on unknown but reads material input(s) {material}")
     if st is not None and "stop_in_force" not in chk.refs:
@@ -653,6 +818,8 @@ def lint(card, reg, reg_sha, schema):
         for p, val in card["sizing"]["params"].items():
             if val == "OPEN":
                 err(f"sizing param '{p}' still OPEN at status {status}")
+        if card["construction"]["max_positions"] == "OPEN":
+            err(f"construction.max_positions still OPEN at status {status}")
         for p, spec in card["params"].items():
             if spec["value"] == "CALIBRATE":
                 err(f"param '{p}' still CALIBRATE at status {status}")
@@ -681,16 +848,53 @@ def lint(card, reg, reg_sha, schema):
     return sorted(set(E))
 
 
-def lint_paths(card_paths, registry_path, schema_path):
+# ------------------------------------------------------------------ lifecycle status (M17 is the only authority)
+def load_transitions(lifecycle_dir):
+    """Every transition record, validated against its schema. Returns (records, errors)."""
+    tdir = os.path.join(lifecycle_dir, "transitions")
+    sch = json.load(open(os.path.join(HERE, "schemas", "strategy_lifecycle_transition.schema.json")))
+    recs, errs = [], []
+    if not os.path.isdir(tdir):
+        return recs, errs
+    for f in sorted(os.listdir(tdir)):
+        if not f.endswith(".json"):
+            continue
+        rec = json.load(open(os.path.join(tdir, f)))
+        e = schema_errors(rec, sch, sch, f"lifecycle/{f}")
+        if e:
+            errs += e
+            continue
+        recs.append({**rec, "_file": f})
+    return recs, errs
+
+
+def lifecycle_status(code, card_sha, records):
+    """(status, record file) from the latest record for this card hash; (None, None) if unregistered.
+    Also checks the chain: each record for the hash starts where the previous one ended."""
+    chain = sorted((r for r in records if r["strategy_code"] == code and r["card_sha256"] == card_sha),
+                   key=lambda r: r["decided_at"])
+    problems, prev = [], "none"
+    for r in chain:
+        if r["from_status"] != prev:
+            problems.append(f"lifecycle/{r['_file']}: from_status {r['from_status']} but the card was {prev}")
+        prev = r["to_status"]
+    if not chain:
+        return None, None, problems
+    return chain[-1]["to_status"], chain[-1]["_file"], problems
+
+
+def lint_paths(card_paths, registry_path, schema_path, lifecycle_dir=None):
     reg = load_yaml(registry_path)
-    reg_sha = sha256_file(registry_path)
     schema = json.load(open(schema_path))
-    results, codes = {}, {}
+    records, rec_errs = load_transitions(lifecycle_dir or os.path.join(HERE, "lifecycle"))
+    results, codes, statuses = {}, {}, {}
     for p in card_paths:
         try:
             card = load_yaml(p)
-            errs = lint(card, reg, reg_sha, schema)
             code = card.get("code") if isinstance(card, dict) else None
+            status, rec, chain_errs = lifecycle_status(code, sha256_file(p), records)
+            errs = lint(card, reg, schema, status or "experimental") + chain_errs + rec_errs
+            statuses[p] = (status or "unregistered - linted as experimental", rec)
         except Exception as e:  # unreadable YAML, duplicate keys
             errs, code = [f"unreadable: {e}"], None
         if code:
@@ -698,23 +902,31 @@ def lint_paths(card_paths, registry_path, schema_path):
                 errs = errs + [f"duplicate strategy code '{code}' (also in {codes[code]})"]
             codes[code] = p
         results[p] = errs
+    lint_paths.statuses = statuses
     return results
 
 
 def main(argv):
     reg_path = os.path.join(HERE, "registry.yaml")
     schema_path = os.path.join(HERE, "schemas", "card.schema.json")
-    cards, it = [], iter(argv[1:])
+    cards, it, show_closure = [], iter(argv[1:]), False
     for a in it:
         if a == "--registry":
             reg_path = next(it)
         elif a == "--schema":
             schema_path = next(it)
+        elif a == "--closure":
+            show_closure = True
         else:
             cards.append(a)
     if not cards:
         sdir = os.path.join(HERE, "strategies")
         cards = sorted(os.path.join(sdir, f) for f in os.listdir(sdir) if f.endswith(".yaml"))
+    if show_closure:
+        reg = load_yaml(reg_path)
+        for p in cards:
+            print(f"{os.path.relpath(p)}: closure_sha256 {closure_sha256(load_yaml(p), reg)}")
+        return 0
     try:
         results = lint_paths(cards, reg_path, schema_path)
     except Exception as e:
@@ -722,7 +934,9 @@ def main(argv):
         return 2
     bad = False
     for p, errs in results.items():
-        print(f"{os.path.relpath(p)}: {'PASS' if not errs else f'{len(errs)} violation(s)'}")
+        st, rec = lint_paths.statuses.get(p, ("?", None))
+        where = f"status {st}" + (f", lifecycle/{rec}" if rec else "")
+        print(f"{os.path.relpath(p)}: {'PASS' if not errs else f'{len(errs)} violation(s)'} ({where})")
         for e in errs:
             print(f"  - {e}")
         bad |= bool(errs)

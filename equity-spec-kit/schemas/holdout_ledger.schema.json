@@ -16,51 +16,77 @@
   "entries": {
    "type": "array",
    "items": {
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-     "entry_id",
-     "card_version",
-     "card_sha256",
-     "exposed_from",
-     "exposed_to",
-     "kind",
-     "run_id",
-     "recorded_at"
-    ],
-    "properties": {
-     "entry_id": {
-      "type": "string"
+    "allOf": [
+     {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "entry_id",
+       "card_version",
+       "card_sha256",
+       "exposed_from",
+       "exposed_to",
+       "kind",
+       "run_id",
+       "recorded_at"
+      ],
+      "properties": {
+       "entry_id": {
+        "type": "string"
+       },
+       "card_version": {
+        "type": "string"
+       },
+       "card_sha256": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+       },
+       "exposed_from": {
+        "type": "string",
+        "format": "date"
+       },
+       "exposed_to": {
+        "type": "string",
+        "format": "date"
+       },
+       "kind": {
+        "enum": [
+         "design",
+         "sealed_holdout",
+         "inherited"
+        ]
+       },
+       "run_id": {
+        "type": "string"
+       },
+       "recorded_at": {
+        "type": "string",
+        "format": "date-time"
+       },
+       "source_lineage": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*$"
+       }
+      }
      },
-     "card_version": {
-      "type": "string"
-     },
-     "card_sha256": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
-     },
-     "exposed_from": {
-      "type": "string",
-      "format": "date"
-     },
-     "exposed_to": {
-      "type": "string",
-      "format": "date"
-     },
-     "kind": {
-      "enum": [
-       "design",
-       "sealed_holdout"
-      ]
-     },
-     "run_id": {
-      "type": "string"
-     },
-     "recorded_at": {
-      "type": "string",
-      "format": "date-time"
+     {
+      "if": {
+       "properties": {
+        "kind": {
+         "const": "inherited"
+        }
+       },
+       "required": [
+        "kind"
+       ]
+      },
+      "then": {
+       "required": [
+        "source_lineage"
+       ]
+      }
      }
-    }
+    ]
    }
   }
  }

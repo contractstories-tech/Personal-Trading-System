@@ -1,43 +1,97 @@
-# Feature & identifier registry - Document 02 r3, Appendix A
-# 2.2.0: two cutoff domains; on_filing defers; input materiality; penalise defined; hard cap; lineage
-# Single owner of: feature metadata, expression functions, enums, strategy classes,
-# evaluation triggers, benchmarks, sizing methods, runtime-state ownership, sector
-# codes, void-event predicates and the corporate-action policy.
-# Strategy cards reference codes only and pin this file by version AND sha256.
+# Feature & identifier registry - Document 02 r5, Appendix A
+# 3.0.0 (r5.5, the Stage 0 re-pin): cards pin the canonical hash of the registry entries they use (their
+# closure), not this whole file; every entry carries its own version; evaluation semantics are normative
+# and versioned; `substitute` and `next_executable_session` are removed; cutoffs are typed timestamp;
+# the momentum initial stop uses ATR at the signal; ROCE, rights and window conventions are corrected.
+# Single owner of: feature metadata, expression functions, enums, strategy classes, evaluation triggers,
+# evaluation semantics, window conventions, benchmarks, sizing methods, runtime-state ownership, sector
+# codes, void-event predicates, security identity and the corporate-action policy.
 
-registry_version: 2.2.0
+registry_version: 3.0.0
 
-# Expression types: num, bool, date, qty (integer shares), enum:<name>
+# Expression types: num, bool, date, timestamp, qty (integer shares), enum:<name>
 # Enum literals in expressions are ALWAYS namespaced: surveillance_stage.none
 enums:
   surveillance_stage: [none, asm_lt_1, asm_lt_2plus, asm_st_1, asm_st_2plus, gsm_any]
   persist_unit: [session, half_year, quarter, fiscal_year]
-  unknown_behaviour: [exclude, fail, penalise, substitute]
+  unknown_behaviour: [exclude, fail, penalise]
   attempt_policy: [every_session_until_ttl, single_session, retry_window]
   recheck_failure: [void_signal, skip_attempt]
   on_exhausted: [cancel_release_keep_holding, void_signal]
   exit_execution: [open_next_executable_session]
   exit_cadence: [daily, weekly]
+  on_out_of_domain: [fire, review]
   ttl_unit: [trading_sessions]
   status: [experimental, shadow, production, suspended, retired]
   direction: [higher_better, lower_better]
   trade_direction: [long]              # short reserved: needs borrow module (deferred)
   selection_method: [gate_only, rank_and_gate]
+  capacity_order: [rank, earliest_signal]
+  residual_cash: [uninvested]
   horizon: [intraday, days, weeks, months, years]
   universe_base: [market_eligible, intraday_eligible]
   weekday: [mon, tue, wed, thu, fri]
   calibration_statistic: [quantile]
+  calibration_sampling: [pooled_entry_sessions]
 
-# ------------------------------------------------------------------ strategy classes
-# A strategy class selects the data it may read, how it may be triggered and which
-# validation protocol (Document 04) applies. The platform knows nothing else about it.
+# ------------------------------------------------------------------ evaluation semantics (normative)
+# How a card's expressions are evaluated. Versioned; part of every card's closure. The executable definition
+# is reference_engine.py, fixed by golden/card_cases.yaml.
+evaluation_semantics:
+  version: 1.0.0
+  arithmetic: "Decimal. Features, literals and thresholds are compared exactly; no floating-point comparison"
+  non_known: "missing, stale, conflicted and not_applicable are 'non-known'. out_of_domain resolves by the feature's declared outcome"
+  gates: >-
+    Resolution per gate, in order: (1) a non-known input whose effective unknown behaviour is fail -> FAIL;
+    (2) a non-known input whose behaviour is exclude -> EXCLUDED (the security is not a candidate, and is recorded as excluded);
+    (3) an out_of_domain input with outcome fail -> FAIL; (4) an out_of_domain input with outcome drop -> UNKNOWN;
+    (5) a non-known input whose behaviour is penalise -> UNKNOWN; (6) otherwise every input is known and the
+    expression evaluates to PASS or FAIL. Gates therefore never combine unknowns logically.
+    A composite referenced by a gate carries the inputs of the composite.
+  candidacy: "a security is a candidate when every gate is PASS, or UNKNOWN on a gate with unknown_blocks false"
+  exits: >-
+    Kleene three-valued logic over the expression (AND is FALSE if any operand is FALSE, TRUE if all are TRUE;
+    OR is TRUE if any operand is TRUE, FALSE if all are FALSE; otherwise UNKNOWN; a comparison with a
+    non-known operand is UNKNOWN). The exit FIRES when the expression is TRUE. It also FIRES when any input it
+    reads (for persist: on the latest unit) is out_of_domain with outcome fail, unless the exit declares
+    on_out_of_domain: review. Otherwise UNKNOWN raises a review trigger and the position is held.
+  persist: "TRUE iff cond is TRUE on the last n evaluable units; UNKNOWN if any of them is UNKNOWN or fewer than n exist; FALSE otherwise"
+  universe_filters: "FALSE removes the security from the candidates and from the scoring population; UNKNOWN removes it from the candidates only"
+  review_triggers: "shown in monitoring; never trade in a model portfolio; every review-trigger occurrence is counted in the validation report"
+  weekly: >-
+    weekly_eod with weekday W, and an exit with cadence weekly and weekday W, evaluate on the last executable
+    session of each ISO week falling on or before W; a week with no such session is skipped
+  confidence: "each penalised input that is not known lowers data_confidence one band; below publish_minimum the claim is recorded but not shown"
+  ranking: "rank_and_gate scores the population before gating; a missing rank orders after every ranked claim; ties within tie_tolerance break on higher market cap, then ISIN"
+
+# ------------------------------------------------------------------ rolling-window conventions (normative)
+window_conventions:
+  version: 1.0.0
+  session: "an executable exchange session (trading_calendar); muhurat sessions are not units for any rolling window, and their bars are stored but not used by features"
+  present: "a security is present in a session when a resolved bar exists for it; a suspended or untraded session is absent"
+  lookback: "X(t-k) is the value at the k-th session before t; if the security is absent there, the last present value at or before t-k within 5 sessions is used, else missing"
+  returns_for_volatility: "daily log returns between two consecutive sessions in which the security is present; no multi-session gap returns"
+  annualisation: "sqrt(250)"
+  stdev: "sample standard deviation (divisor n-1) for volatility; population (divisor N) for z-scores and roce_stability"
+  median: "even count: mean of the two middle values"
+
+# ------------------------------------------------------------------ cross-sectional scoring (normative; Doc 02 s9)
+cross_sectional_scoring:
+  version: 1.0.0
+  population: "the strategy universe on the date: market-eligible, minus the card's sector exclusions and securities whose universe filters are FALSE, before gates"
+  min_contributors: 30
+  winsorise: "1st and 99th percentiles, linear interpolation between order statistics (numpy quantile method linear)"
+  standardise: "population mean and population standard deviation (divisor N) of the clipped values; zero deviation -> missing for all"
+  composite: "mean of the available directional z-scores; missing below min_inputs_known; never re-standardised"
+  tie_tolerance: 1.0e-9
+
 strategy_classes:
   fundamental_long_term: {data_resolutions: [eod_filings], triggers: [daily_eod, on_filing], validation_class: fundamental}
   momentum:              {data_resolutions: [eod],         triggers: [weekly_eod, daily_eod], validation_class: technical_eod}
   swing:                 {data_resolutions: [eod],         triggers: [daily_eod],             validation_class: technical_eod}
   event_catalyst:        {data_resolutions: [eod_filings, filings_event], triggers: [on_filing, daily_eod], validation_class: event}
   intraday:              {data_resolutions: [intraday_1m, intraday_quotes], triggers: [intraday_interval, continuous_session],
-                          validation_class: intraday, status_note: "data contract reserved in Doc 02 s15; not yet implementable"}
+                          validation_class: intraday, status_note: "data contract reserved in Doc 02 s16; not yet implementable"}
 
 data_resolutions:
   eod:              {implemented: true}
@@ -53,26 +107,28 @@ cutoff_policy:
 
 triggers:
   daily_eod:          {params: []}
-  weekly_eod:         {params: [weekday]}
+  weekly_eod:         {params: [weekday], semantics: "see evaluation_semantics.weekly"}
   on_filing:          {params: [], semantics: "marks the security for the next daily_eod evaluation; never evaluates against an incomplete session"}
   intraday_interval:  {params: [minutes]}
   continuous_session: {params: []}
 
 # ------------------------------------------------------------------ functions
+# allowed_arguments restricts date arguments to values known at evaluation: no expression can name a future
+# session (audit B2: r5.4 accepted close_raw(next_executable_session(signal_date))).
 functions:
-  z:                       {args: [num], returns: num}
-  persist:                 {args: [bool, qty, "enum:persist_unit"], returns: bool,
-                            semantics: "TRUE iff cond is TRUE on the last n evaluable units; UNKNOWN if any of them is unknown; FALSE otherwise. Non-trading days are not units."}
-  if:                      {args: [bool, num, num], returns: num}
-  min:                     {args: [num, num], returns: num}
-  max:                     {args: [num, num], returns: num}
-  floor:                   {args: [num], returns: qty}
-  close_raw:               {args: [date], returns: num}
-  open_raw:                {args: [date], returns: num}
-  prev_session:            {args: [date], returns: date}
-  impact_cost:             {args: [num, num], returns: num, status: defined, model: impact_model_v1,
-                            definition: "half-spread by ADV tier (>=100cr 0.0005, >=25cr 0.0010, else 0.0020) + 0.02 * sqrt(value_cr / adv_cr); Document 04 s5; calibrated in shadow"}
-  next_executable_session: {args: [date], returns: date}
+  z:            {version: 1.0.0, args: [num], returns: num}
+  persist:      {version: 1.0.0, args: [bool, qty, "enum:persist_unit"], returns: bool, semantics: "see evaluation_semantics.persist"}
+  if:           {version: 1.0.0, args: [bool, num, num], returns: num}
+  min:          {version: 1.0.0, args: [num, num], returns: num}
+  max:          {version: 1.0.0, args: [num, num], returns: num}
+  floor:        {version: 1.0.0, args: [num], returns: qty}
+  close_raw:    {version: 1.0.0, args: [date], returns: num,
+                 allowed_arguments: [signal_date, eval_date, "prev_session(signal_date)", "prev_session(eval_date)"]}
+  open_raw:     {version: 1.0.0, args: [date], returns: num,
+                 allowed_arguments: [signal_date, eval_date, "prev_session(signal_date)", "prev_session(eval_date)"]}
+  prev_session: {version: 1.0.0, args: [date], returns: date, allowed_arguments: [signal_date, eval_date]}
+  impact_cost:  {version: 1.0.0, args: [num, num], returns: num, status: defined, model: impact_model_v1,
+                 definition: "half-spread by ADV tier (>=100cr 0.0005, >=25cr 0.0010, else 0.0020) + 0.02 * sqrt(value_cr / adv_cr); Document 04 s5; calibrated in shadow"}
 
 # ------------------------------------------------------------------ runtime state
 # owner: provided  = supplied by the engine, with the stated source
@@ -80,50 +136,56 @@ functions:
 #        stateful  = engine-maintained with declared init / update / order
 # ca_state: price | quantity -> transformed by the corporate-action policy on ex-dates
 runtime:
-  signal_date:        {type: date, owner: provided, source: "trading date of the qualifying evaluation"}
-  eval_date:          {type: date, owner: provided, source: "trading date of the current evaluation"}
-  disclosure_cutoff_ts: {type: date, owner: provided, source: "disclosure-domain cutoff of the run (Doc 02 s3)"}
-  market_cutoff_ts:   {type: date, owner: provided, source: "exchange-EOD-domain cutoff of the run (Doc 02 s3)"}
-  hard_cap_value:     {type: num,  owner: provided, source: "notional_capital * max_position_pct in model portfolios; allocator headroom for actual recommendations"}
-  holding_days:       {type: qty,  owner: provided, source: "executable sessions since first fill of the current cycle"}
-  target_value:       {type: num,  owner: derived, card_field: sizing.formula}
-  revised_target_value: {type: num, owner: derived, card_field: sizing.revised_formula}
-  entry_ref:          {type: num,  owner: derived, card_field: proposed_execution_rule.entry_ref, ca_state: price}
-  entry_high:         {type: num,  owner: derived, card_field: proposed_execution_rule.entry_high, ca_state: price}
-  target_qty:         {type: qty,  owner: derived, card_field: proposed_execution_rule.target_qty, ca_state: quantity}
-  revised_target_qty: {type: qty,  owner: derived, card_field: proposed_execution_rule.revised_target_qty, ca_state: quantity}
-  tranche_limit:      {type: num,  owner: derived, card_field: "tranches[n].limit", ca_state: price}
-  tranche_weight:     {type: num,  owner: provided, source: "weight of the tranche being evaluated"}
-  provisional_value_cr: {type: num, owner: provided, source: "M9a provisional size in INR crore"}
-  current_earmark_qty: {type: qty, owner: stateful, ca_state: quantity,
+  signal_date:        {version: 1.0.0, type: date, owner: provided, source: "trading date of the qualifying evaluation"}
+  eval_date:          {version: 1.0.0, type: date, owner: provided, source: "trading date of the current evaluation"}
+  disclosure_cutoff_ts: {version: 1.0.0, type: timestamp, owner: provided, source: "disclosure-domain cutoff of the run (Doc 02 s3)"}
+  market_cutoff_ts:   {version: 1.0.0, type: timestamp, owner: provided, source: "exchange-EOD-domain cutoff of the run (Doc 02 s3)"}
+  hard_cap_value:     {version: 1.0.0, type: num,  owner: provided,
+                       source: "model portfolio: notional_capital * max_position_pct; actual recommendation: the allocator's headroom for the security (Doc 01 s9)"}
+  holding_days:       {version: 1.0.0, type: qty,  owner: provided, source: "executable sessions since first fill of the current cycle"}
+  target_value:       {version: 1.0.0, type: num,  owner: derived, card_field: sizing.formula}
+  revised_target_value: {version: 1.0.0, type: num, owner: derived, card_field: sizing.revised_formula}
+  entry_ref:          {version: 1.0.0, type: num,  owner: derived, card_field: proposed_execution_rule.entry_ref, ca_state: price}
+  entry_high:         {version: 1.0.0, type: num,  owner: derived, card_field: proposed_execution_rule.entry_high, ca_state: price}
+  target_qty:         {version: 1.0.0, type: qty,  owner: derived, card_field: proposed_execution_rule.target_qty, ca_state: quantity}
+  revised_target_qty: {version: 1.0.0, type: qty,  owner: derived, card_field: proposed_execution_rule.revised_target_qty, ca_state: quantity}
+  tranche_limit:      {version: 1.0.0, type: num,  owner: derived, card_field: "tranches[n].limit", ca_state: price}
+  tranche_weight:     {version: 1.0.0, type: num,  owner: provided, source: "weight of the tranche being evaluated"}
+  provisional_value_cr: {version: 1.0.0, type: num, owner: provided,
+                       source: "model portfolio: the M9a provisional size in INR crore; actual recommendation: the allocator's actual size (re-checked in M8b)"}
+  current_earmark_qty: {version: 1.0.0, type: qty, owner: stateful, ca_state: quantity,
                         init: "0 at signal", update: "+ allocated_qty on each fill, - on each exit fill"}
-  entry_basis:        {type: num,  owner: stateful, ca_state: price,
-                        init: "quantity-weighted average of this cycle's fills (from executed_trade, never rewritten)",
+  entry_basis:        {version: 1.0.0, type: num,  owner: stateful, ca_state: price,
+                        init: "quantity-weighted average of this cycle's fills (never rewritten)",
                         update: "re-averaged on each entry fill; policy-adjusted on ex-dates"}
-  highest_close_since_entry: {type: num, owner: stateful, ca_state: price,
+  atr_pct_at_signal:  {version: 1.0.0, type: num,  owner: stateful,
+                        init: "atr_pct_20 on signal_date", update: "never; scale-free, so untouched by corporate actions",
+                        purpose: "the initial stop is known before the order is placed, and the risk budget holds at any permitted fill (audit C3)"}
+  highest_close_since_entry: {version: 1.0.0, type: num, owner: stateful, ca_state: price,
                         init: "entry fill price on the fill date",
                         update: "on each session AFTER the stop test: if close_raw(eval_date) > current value (strictly greater) then set to close_raw(eval_date)"}
-  atr_pct_at_peak:    {type: num,  owner: stateful,
-                        init: "atr_pct_20 on the fill date",
+  atr_pct_at_peak:    {version: 1.0.0, type: num,  owner: stateful,
+                        init: "atr_pct_at_signal",
                         update: "set to atr_pct_20 on exactly the sessions where highest_close_since_entry is updated; ties do not update"}
-  stop_prev:          {type: num,  owner: stateful, ca_state: price,
+  stop_prev:          {version: 1.0.0, type: num,  owner: stateful, ca_state: price,
                         init: "stop.initial evaluated on the fill date", update: "= stop_in_force at the start of each session"}
-  stop_in_force:      {type: num,  owner: stateful, ca_state: price,
+  stop_in_force:      {version: 1.0.0, type: num,  owner: stateful, ca_state: price,
                         init: "stop.initial", update: "stop.update, evaluated AFTER exits are tested (test_then_update)"}
-  notional_capital:   {type: num,  owner: provided, param: true, source: "measurement capital for this strategy's model portfolio"}
-  target_vol_contribution: {type: num, owner: provided, param: true}
-  risk_to_stop_pct:   {type: num,  owner: provided, param: true}
-  max_position_pct:   {type: num,  owner: provided, param: true}
+  notional_capital:   {version: 1.0.0, type: num,  owner: provided, param: true,
+                       source: "measurement capital of the model portfolio, in INR - a pre-registered hypothesis parameter, not personal policy"}
+  target_vol_contribution: {version: 1.0.0, type: num, owner: provided, param: true}
+  risk_to_stop_pct:   {version: 1.0.0, type: num,  owner: provided, param: true}
+  max_position_pct:   {version: 1.0.0, type: num,  owner: provided, param: true}
 
 # ------------------------------------------------------------------ input materiality and confidence
-# Every feature is MATERIAL unless listed here. A material feature may never be `penalise`
-# and may never feed a gate with unknown_blocks: false - its absence must block or exclude,
-# so a strategy cannot silently become a different strategy where data is missing.
+# Every feature is MATERIAL unless listed here. A material feature may never be `penalise` and may never feed a
+# gate with unknown_blocks: false - directly or through a composite - so a strategy cannot silently become a
+# different strategy where data is missing.
 secondary_features: [roce_stability, positive_revenue_growth_years_5y, exceptional_frequency,
                      ev_ebitda_vs_sector, earnings_yield_spread, market_breadth]
 
-# `penalise` defined: each penalised input that is not known lowers data_confidence by one band.
 confidence_policy:
+  version: 1.0.0
   bands: [high, medium, low, insufficient]
   start: high
   lower_one_band_for_each: [penalised input not known, conflicted input used for ranking]
@@ -139,28 +201,47 @@ sector_codes: [banks, nbfc, insurance, capital_markets, metals_mining, cement, c
                healthcare_services, real_estate, textiles, specialty_chemicals, agri, logistics, other]
 
 sizing_methods:
-  target_volatility_contribution: {params: [notional_capital, target_vol_contribution, max_position_pct]}
-  stop_risk_budget:               {params: [notional_capital, risk_to_stop_pct, max_position_pct]}
+  target_volatility_contribution: {version: 1.0.0, params: [notional_capital, target_vol_contribution, max_position_pct]}
+  stop_risk_budget:               {version: 1.0.0, params: [notional_capital, risk_to_stop_pct, max_position_pct]}
 
-# Void events: a registered state transition, not a free-text name.
+# Void events: a registered state transition, not a free-text name. Thresholds come from the card's
+# void_parameters, never from another section by gate number (audit C9).
 void_events:
-  governance_event:   {predicate: "auditor_resignation_5y becomes true OR promoter_pledge_pct crosses above the card's G5 threshold, after signal_date"}
-  surveillance_entry: {predicate: "surveillance_stage changes from surveillance_stage.none to any other value after signal_date"}
-  band_close_event:   {predicate: "band_close_state is closed_at_upper_band or closed_at_lower_band on any session after signal_date while unfilled"}
-  transformative_ca:  {predicate: "a demerger, merger, capital reduction or rights issue goes ex after signal_date while unfilled"}
+  governance_event:   {version: 1.0.0, parameters: [promoter_pledge_pct],
+                       predicate: "auditor_resignation_5y becomes true OR promoter_pledge_pct crosses above void_parameters.governance_event.promoter_pledge_pct, after signal_date"}
+  surveillance_entry: {version: 1.0.0, parameters: [],
+                       predicate: "surveillance_stage changes from surveillance_stage.none to any other value after signal_date"}
+  band_close_event:   {version: 1.0.0, parameters: [],
+                       predicate: "band_close_state is closed_at_upper_band or closed_at_lower_band on any session after signal_date while unfilled"}
+  transformative_ca:  {version: 1.0.0, parameters: [],
+                       predicate: "a demerger, merger, capital reduction or rights issue goes ex after signal_date while unfilled"}
+
+# ------------------------------------------------------------------ security identity (audit B1)
+# An ISIN change (a face-value change normally allots a new ISIN in India; also some capital reductions and
+# schemes) must not break history, universe membership, positions or tax lots.
+security_identity:
+  version: 1.0.0
+  key: "security_id - a stable internal identifier; security_lineage(security_id, isin, valid_from, valid_to, reason, ca_event_id) with half-open, non-overlapping windows"
+  keyed_by_security_id: [features, universe_membership_and_hysteresis, claims, cooldowns, holding_days, model_positions,
+                         ledger_holding, tax_lots, stop_and_price_state]
+  keyed_by_isin: [price_observation, delivery_observation, source files, executed_trade (as reported by the broker)]
+  continuity: "a new ISIN for the same security continues its security_id: price series join across the change with the action's f applied; held quantity / f and price state x f; holding periods, cooldowns and tax-lot dates carry unchanged"
+  merger_conversion: "a merger target converts into the successor's security_id at the scheme ratio on the record date; the successor's own history is used for its features"
 
 # ------------------------------------------------------------------ corporate actions
 # Applied centrally by M14 (model ledgers) and M15 (holdings). Cards declare held state only.
 corporate_action_policies:
-  standard_equity_ca_policy_v2:
-    split_bonus_consolidation: {quantities: "/ f", prices: "x f", cash: none, fractional: "cash in lieu = fraction x P_cum x f (the post-action price; golden case G11b)"}
+  standard_equity_ca_policy_v3:
+    version: 3.0.0
+    split_bonus_consolidation: {quantities: "/ f", prices: "x f", cash: none, fractional: "cash in lieu = fraction x P_cum x f (the post-action price; golden case G11b)",
+                                isin_change: "if a new ISIN is allotted, the position continues under the same security_id (security_identity)"}
     special_dividend:          {quantities: unchanged, prices: "x f", cash: credit}
     ordinary_dividend:         {quantities: unchanged, prices: unchanged, cash: credit}
     rights_issue:              {quantities: "unchanged until allotment", prices: "x f",
-                                entitlement: "valued at the entitlement's traded close on its last trading session if listed (2020+), else intrinsic max(0, P_ex - S); entitlement sold, cash credited",
+                                entitlement: "floor(held x a / b) entitlements (fractions ignored); valued at the entitlement's traded close on its last trading session if listed (2020+), else intrinsic max(0, TERP - S), TERP = (b x P_cum + a x S) / (a + b); entitlement sold, cash credited",
                                 valuation_blackout: "ex-date until allotment is reflected in shares_outstanding"}
     demerger:                  {quantities: "parent unchanged", prices: "parent x f",
-                                stub: "resulting-entity position created at implied value (P_cum - P_discovered) per parent share x scheme ratio, state unlisted_stub, non-tradable, excluded from capacity and caps",
+                                stub: "resulting-entity position of floor(held x r) shares, r = resulting shares per parent share, at implied price (P_cum - P_discovered) / r; the fractional entitlement is cash in lieu at that price; state unlisted_stub, non-tradable, excluded from capacity and caps",
                                 stub_exit: "open of the resulting entity's first executable session after listing",
                                 valuation_blackout: "parent valuation features out_of_domain until 4 post-demerger quarters are filed"}
     merger_target:             {quantities: "converted at scheme ratio into successor on record date",
@@ -168,115 +249,121 @@ corporate_action_policies:
     capital_reduction:         {quantities: "per scheme", prices: "x f",
                                 valuation_blackout: "until the next half-yearly balance sheet reflects the reduction"}
 
+# For ey_median_5y only (audit B8): the actions after which the historical valuation of the company no longer
+# describes the continuing business. Rights issues are NOT transformative here; they get only a blackout.
+valuation_transformative_actions: {version: 1.0.0, actions: [demerger, capital_reduction, amalgamation_as_transferee, merger_as_target]}
+
 # ------------------------------------------------------------------ features
+# Formulas are normative text; reference_features.py implements each, fixed by golden/feature_cases.yaml.
 features:
-  operating_history_years:   {type: qty, series: none, cadence: annual, default_unknown: exclude,
-                              formula: "fiscal years with a complete canonical P&L on file"}
-  roce_3y_avg:               {type: num, series: none, cadence: annual, default_unknown: exclude,
-                              formula: "mean over 3 FY of ebit_underlying / average(capital_employed at FY start, at FY end); capital_employed includes lease liabilities",
-                              domain: "total_equity_owners > 0 in each year", out_of_domain: fail,
-                              boundary: "if capital_employed <= 0.05 * total_assets with positive equity: value = 1.00 (capped) and flag cash_rich_capped = true"}
-  roce_hy_ttm:               {type: num, series: none, cadence: half_yearly, default_unknown: exclude,
-                              formula: "TTM ebit_underlying / average(capital_employed now, 12m earlier), at half-year ends only",
-                              domain: "total_equity_owners > 0", out_of_domain: fail, boundary: "as roce_3y_avg"}
-  roce_5y_trend:             {type: num, series: none, cadence: annual, default_unknown: exclude,
-                              formula: "OLS slope of 5 annual ROCE (capped values) / mean ROCE",
+  operating_history_years:   {version: 1.0.0, type: qty, series: none, cadence: annual, default_unknown: exclude,
+                              formula: "consecutive fiscal years, ending with the latest FY usable at the cutoff, each with a complete canonical P&L (revenue, pbt, tax, pat_owners full year)"}
+  roce_3y_avg:               {version: 1.0.0, type: num, series: none, cadence: annual, default_unknown: exclude,
+                              formula: "mean of annual ROCE for the latest 3 FY; annual ROCE per roce_rule",
+                              domain: "total_equity_owners > 0 at each FY end, and no year failing roce_rule", out_of_domain: fail,
+                              roce_rule: "CE = total_equity_owners + borrowings + lease_liabilities - cash_equivalents; CE_avg = mean(CE at FY start, CE at FY end); TA_avg likewise. If equity <= 0: out_of_domain fail. If CE_avg <= 0.05 x TA_avg: EBIT > 0 -> 1.00 with flag cash_rich_capped; EBIT <= 0 -> out_of_domain fail. Otherwise min(ebit_underlying / CE_avg, 1.00), flagged capped when the cap binds. The 0.05 boundary is inclusive"}
+  roce_hy_ttm:               {version: 1.0.0, type: num, series: none, cadence: half_yearly, default_unknown: exclude,
+                              formula: "roce_rule on TTM ebit_underlying with CE_avg = mean(CE now, CE 12 months earlier), at half-year ends only",
+                              domain: "total_equity_owners > 0, and not failing roce_rule", out_of_domain: fail}
+  roce_5y_trend:             {version: 1.0.0, type: num, series: none, cadence: annual, default_unknown: exclude,
+                              formula: "OLS slope of the latest 5 annual ROCE values (roce_rule, capped) against year index 1..5, divided by their mean",
                               domain: "all 5 years in domain and mean ROCE > 0", out_of_domain: fail}
-  roce_stability:            {type: num, series: none, cadence: annual, default_unknown: exclude,
-                              formula: "1 / (1 + stdev of 5 annual ROCE, capped values)", domain: "all 5 years in domain", out_of_domain: drop}
-  cfo_pat_3y:                {type: num, series: none, cadence: annual, default_unknown: exclude,
-                              formula: "sum cfo / sum pat_owners over 3 FY", domain: "sum pat_owners > 0", out_of_domain: fail}
-  debt_equity:               {type: num, series: none, cadence: half_yearly, default_unknown: exclude,
-                              formula: "(borrowings + lease_liabilities) / total_equity_owners", domain: "total_equity_owners > 0", out_of_domain: fail}
-  interest_coverage:         {type: num, series: none, cadence: quarterly, default_unknown: exclude,
+  roce_stability:            {version: 1.0.0, type: num, series: none, cadence: annual, default_unknown: exclude,
+                              formula: "1 / (1 + population stdev of the latest 5 annual ROCE values, roce_rule, capped)", domain: "all 5 years in domain", out_of_domain: drop}
+  cfo_pat_3y:                {version: 1.0.0, type: num, series: none, cadence: annual, default_unknown: exclude,
+                              formula: "sum cfo / sum pat_owners over the latest 3 FY", domain: "sum pat_owners > 0", out_of_domain: fail}
+  debt_equity:               {version: 1.0.0, type: num, series: none, cadence: half_yearly, default_unknown: exclude,
+                              formula: "(borrowings + lease_liabilities) / total_equity_owners at the latest half-year end", domain: "total_equity_owners > 0", out_of_domain: fail}
+  interest_coverage:         {version: 1.0.0, type: num, series: none, cadence: quarterly, default_unknown: exclude,
                               formula: "TTM ebit_underlying / TTM finance_costs, capped at 100; zero finance costs -> 100 and no_finance_cost = true"}
-  positive_revenue_growth_years_5y: {type: qty, series: none, cadence: annual, default_unknown: exclude,
-                              formula: "FY of last 5 with YoY revenue growth > 0"}
-  exceptional_frequency:     {type: qty, series: none, cadence: annual, default_unknown: exclude,
-                              formula: "FY of last 5 with exceptional_net != 0"}
-  opm_fy:                    {type: num, series: none, cadence: annual, default_unknown: exclude,
+  positive_revenue_growth_years_5y: {version: 1.0.0, type: qty, series: none, cadence: annual, default_unknown: exclude,
+                              formula: "number of the latest 5 FY with revenue greater than the prior FY's (needs 6 FY of revenue)"}
+  exceptional_frequency:     {version: 1.0.0, type: qty, series: none, cadence: annual, default_unknown: exclude,
+                              formula: "number of the latest 5 FY with exceptional_net != 0"}
+  opm_fy:                    {version: 1.0.0, type: num, series: none, cadence: annual, default_unknown: exclude,
                               formula: "ebitda / revenue", domain: "revenue > 0", out_of_domain: drop}
-  receivable_days_fy:        {type: num, series: none, cadence: annual, default_unknown: exclude,
+  receivable_days_fy:        {version: 1.0.0, type: num, series: none, cadence: annual, default_unknown: exclude,
                               formula: "receivables at FY end / FY revenue * 365", domain: "revenue > 0", out_of_domain: drop}
-  inventory_days_fy:         {type: num, series: none, cadence: annual, default_unknown: exclude,
+  inventory_days_fy:         {version: 1.0.0, type: num, series: none, cadence: annual, default_unknown: exclude,
                               formula: "inventory at FY end / FY revenue * 365 (revenue base; COGS not canonical)",
                               domain: "revenue > 0", out_of_domain: drop}
-  issuance_share_growth_5y:  {type: num, series: none, cadence: annual, default_unknown: exclude,
-                              formula: "5-year growth of shares_issuance_neutral"}
-  market_cap:                {type: num, series: raw, cadence: daily, default_unknown: exclude,
-                              formula: "close_raw(eval_date) * shares_outstanding as of as_of_ts"}
-  earnings_yield_ttm:        {type: num, series: raw, cadence: daily, default_unknown: exclude,
-                              formula: "TTM pat_underlying / market_cap",
+  issuance_share_growth_5y:  {version: 1.0.0, type: num, series: none, cadence: annual, default_unknown: exclude,
+                              formula: "shares_issuance_neutral now / shares_issuance_neutral 5 years earlier - 1"}
+  market_cap:                {version: 1.0.0, type: num, series: raw, cadence: daily, default_unknown: exclude,
+                              formula: "close_raw(eval_date) * shares_outstanding usable at the cutoff (a conflicted count keeps its primary value)"}
+  earnings_yield_ttm:        {version: 1.0.0, type: num, series: raw, cadence: daily, default_unknown: exclude,
+                              formula: "sum of the latest 4 contiguous quarters' pat_underlying / market_cap",
                               domain: "not inside a valuation blackout (CA policy)", out_of_domain: drop}
-  ey_median_5y:              {type: num, series: raw, cadence: daily, default_unknown: exclude,
-                              formula: "median of stored earnings_yield_ttm over the last 1250 sessions, excluding blackout sessions and sessions before the latest transformative CA",
+  ey_median_5y:              {version: 1.0.0, type: num, series: raw, cadence: daily, default_unknown: exclude,
+                              formula: "median of the stored daily earnings_yield_ttm over the last 1250 sessions, excluding blackout sessions and sessions on or before the latest valuation_transformative_actions ex-date",
                               domain: ">= 750 known values in window", out_of_domain: drop}
-  ey_vs_own_5y_median:       {type: num, series: raw, cadence: daily, default_unknown: exclude,
+  ey_vs_own_5y_median:       {version: 1.0.0, type: num, series: raw, cadence: daily, default_unknown: exclude,
                               formula: "earnings_yield_ttm / ey_median_5y", domain: "both > 0 and neither in blackout", out_of_domain: fail}
-  ev_ebitda_vs_sector:       {type: num, series: raw, cadence: daily, default_unknown: exclude,
-                              formula: "(market_cap + borrowings + lease_liabilities - cash_equivalents) / TTM ebitda, over the sector peer median",
+  ev_ebitda_vs_sector:       {version: 1.0.0, type: num, series: raw, cadence: daily, default_unknown: exclude,
+                              formula: "(market_cap + borrowings + lease_liabilities - cash_equivalents) / TTM ebitda, divided by the median of the same ratio over sector peers (same sector code, market-eligible on the date, before any card's exclusions, TTM ebitda > 0, excluding the security itself)",
                               domain: "TTM ebitda > 0, >= 8 valid peers, peer median > 0, not in blackout", out_of_domain: drop}
-  earnings_yield_spread:     {type: num, series: raw, cadence: daily, default_unknown: exclude,
+  earnings_yield_spread:     {version: 1.0.0, type: num, series: raw, cadence: daily, default_unknown: exclude,
                               formula: "earnings_yield_ttm - gsec_10y_yield; both decimals (0.021 = 2.1 percentage points)"}
-  promoter_pledge_pct:       {type: num, series: none, cadence: quarterly, default_unknown: exclude,
-                              formula: "pledged promoter shares / promoter shares from the shareholding-pattern filing effective at as_of_ts"}
-  auditor_resignation_5y:    {type: bool, series: none, cadence: event, default_unknown: exclude,
-                              formula: "any statutory-auditor resignation disclosed to the exchange in the last 5 years (structured disclosure, Doc 02 s14)"}
-  audit_qualification_5y:    {type: bool, series: none, cadence: annual, default_unknown: exclude,
-                              formula: "qualified, adverse or disclaimer opinion in any of the last 5 annual reports (document extraction with deterministic verification, Doc 02 s14)"}
-  forensic_flag_count:       {type: qty, series: none, cadence: annual, default_unknown: exclude,
-                              formula: "number of applicable forensic flags set"}
-  forensic_coverage_pct:     {type: num, series: none, cadence: annual, default_unknown: exclude,
-                              formula: "evaluable applicable flags / applicable flags"}
-  surveillance_stage:        {type: "enum:surveillance_stage", series: none, cadence: daily, default_unknown: exclude,
-                              formula: "as-of surveillance_status. Before a framework's start date: known none. After it without coverage: missing"}
-  is_fno_eligible:           {type: bool, series: none, cadence: daily, default_unknown: exclude,
+  promoter_pledge_pct:       {version: 1.0.0, type: num, series: none, cadence: quarterly, default_unknown: exclude,
+                              formula: "pledged promoter shares / promoter shares from the latest shareholding-pattern filing usable at the cutoff; a company with no promoter holding has 0.0 (nothing can be pledged)"}
+  auditor_resignation_5y:    {version: 1.0.0, type: bool, series: none, cadence: event, default_unknown: exclude,
+                              formula: "any statutory-auditor resignation with effective date in the 5 years ending at the cutoff (Doc 02 s13); missing unless auditor_event coverage is complete for the whole window"}
+  audit_qualification_5y:    {version: 1.0.0, type: bool, series: none, cadence: annual, default_unknown: exclude,
+                              formula: "qualified, adverse or disclaimer opinion in any of the last 5 annual reports (document extraction with deterministic verification, Doc 02 s13)"}
+  forensic_flag_count:       {version: 1.0.0, type: qty, series: none, cadence: annual, default_unknown: exclude,
+                              formula: "number of applicable, evaluable forensic flags that are set"}
+  forensic_coverage_pct:     {version: 1.0.0, type: num, series: none, cadence: annual, default_unknown: exclude,
+                              formula: "evaluable applicable flags / applicable flags; 1.0 when no flag is applicable"}
+  surveillance_stage:        {version: 1.0.0, type: "enum:surveillance_stage", series: none, cadence: daily, default_unknown: exclude,
+                              formula: "as-of surveillance_status. Before every framework's start date: known none. After a start without list coverage: missing"}
+  is_fno_eligible:           {version: 1.0.0, type: bool, series: none, cadence: daily, default_unknown: exclude,
                               formula: "as-of derivatives_eligibility; missing without source coverage"}
-  ret_12m_skip_1m:           {type: num, series: total_return, cadence: daily, default_unknown: exclude,
-                              formula: "TR(t-21) / TR(t-252) - 1"}
-  ret_6m_skip_1m:            {type: num, series: total_return, cadence: daily, default_unknown: exclude,
-                              formula: "TR(t-21) / TR(t-126) - 1"}
-  realised_vol_60d:          {type: num, series: adjusted, cadence: daily, default_unknown: exclude,
-                              formula: "annualised stdev of daily log returns, 60 sessions",
-                              domain: ">= 54 of 60 sessions present and value > 0", out_of_domain: drop}
-  realised_vol_1y:           {type: num, series: adjusted, cadence: daily, default_unknown: exclude,
-                              formula: "annualised stdev of daily log returns, 250 sessions",
-                              domain: ">= 225 of 250 sessions present and value > 0", out_of_domain: drop}
-  vol_adj_mom_12m:           {type: num, series: total_return, cadence: daily, default_unknown: exclude,
+  ret_12m_skip_1m:           {version: 1.0.0, type: num, series: total_return, cadence: daily, default_unknown: exclude,
+                              formula: "TR(t-21) / TR(t-252) - 1, lookback per window_conventions"}
+  ret_6m_skip_1m:            {version: 1.0.0, type: num, series: total_return, cadence: daily, default_unknown: exclude,
+                              formula: "TR(t-21) / TR(t-126) - 1, lookback per window_conventions"}
+  realised_vol_60d:          {version: 1.0.0, type: num, series: adjusted, cadence: daily, default_unknown: exclude,
+                              formula: "sample stdev of the daily log returns among the last 60 sessions x sqrt(250)",
+                              domain: ">= 54 returns in the last 60 sessions and value > 0", out_of_domain: drop}
+  realised_vol_1y:           {version: 1.0.0, type: num, series: adjusted, cadence: daily, default_unknown: exclude,
+                              formula: "sample stdev of the daily log returns among the last 250 sessions x sqrt(250)",
+                              domain: ">= 225 returns in the last 250 sessions and value > 0", out_of_domain: drop}
+  vol_adj_mom_12m:           {version: 1.0.0, type: num, series: total_return, cadence: daily, default_unknown: exclude,
                               formula: "ret_12m_skip_1m / realised_vol_60d"}
-  vol_adj_mom_6m:            {type: num, series: total_return, cadence: daily, default_unknown: exclude,
+  vol_adj_mom_6m:            {version: 1.0.0, type: num, series: total_return, cadence: daily, default_unknown: exclude,
                               formula: "ret_6m_skip_1m / realised_vol_60d"}
-  rel_strength_6m_vs_nifty200_tri: {type: num, series: total_return, cadence: daily, default_unknown: exclude,
+  rel_strength_6m_vs_nifty200_tri: {version: 1.0.0, type: num, series: total_return, cadence: daily, default_unknown: exclude,
                               formula: "(TR_stock(t-21) / TR_stock(t-126)) - (TR_NIFTY_200_TRI(t-21) / TR_NIFTY_200_TRI(t-126)); skip month applied to both"}
-  adv_20d_cr:                {type: num, series: raw, cadence: daily, default_unknown: exclude,
-                              formula: "mean traded_value / 1e7 over 20 sessions, >= 15 present"}
-  delivery_pct_20d_avg:      {type: num, series: raw, cadence: daily, default_unknown: exclude,
-                              formula: "mean delivery_qty / volume over 20 sessions"}
-  price_vs_dma50:            {type: num, series: adjusted, cadence: daily, default_unknown: exclude,
-                              formula: "adjusted close / 50-session mean adjusted close"}
-  price_vs_dma200:           {type: num, series: adjusted, cadence: daily, default_unknown: exclude,
-                              formula: "adjusted close / 200-session mean adjusted close"}
-  atr_pct_20:                {type: num, series: adjusted, cadence: daily, default_unknown: exclude,
-                              formula: "20-session mean true range / adjusted close; scale-free",
+  adv_20d_cr:                {version: 1.0.0, type: num, series: raw, cadence: daily, default_unknown: exclude,
+                              formula: "mean traded_value / 1e7 over the sessions of the last 20 in which the security is present (an untraded but listed session is present with 0); >= 15 present, else missing"}
+  delivery_pct_20d_avg:      {version: 1.0.0, type: num, series: raw, cadence: daily, default_unknown: exclude,
+                              formula: "sum delivery_qty / sum volume (bhavcopy volume) over the sessions of the last 20 in which volume > 0 and delivery is known - a volume-weighted ratio of sums; >= 15 such sessions, else missing"}
+  price_vs_dma50:            {version: 1.0.0, type: num, series: adjusted, cadence: daily, default_unknown: exclude,
+                              formula: "adjusted close(t) / mean adjusted close over the sessions of the last 50 in which the security is present; >= 45 present and present at t, else missing"}
+  price_vs_dma200:           {version: 1.0.0, type: num, series: adjusted, cadence: daily, default_unknown: exclude,
+                              formula: "adjusted close(t) / mean adjusted close over the sessions of the last 200 in which the security is present; >= 180 present and present at t, else missing"}
+  atr_pct_20:                {version: 1.0.0, type: num, series: adjusted, cadence: daily, default_unknown: exclude,
+                              formula: "mean true range over the present sessions of the last 20 / adjusted close(t); true range = max(high, prior close) - min(low, prior close) when the prior session was present, else high - low",
                               domain: ">= 18 of 20 sessions present and value > 0", out_of_domain: drop}
-  circuit_days_60d:          {type: qty, series: raw, cadence: daily, default_unknown: exclude,
-                              formula: "sessions of last 60 with band_close_state closed_at_upper_band or closed_at_lower_band"}
-  market_breadth:            {type: num, series: adjusted, cadence: daily, default_unknown: exclude, status: research_only,
-                              formula: "share of market-eligible universe with price_vs_dma200 > 1"}
+  circuit_days_60d:          {version: 1.0.0, type: qty, series: raw, cadence: daily, default_unknown: exclude,
+                              formula: "sessions of the last 60 with band_close_state closed_at_upper_band or closed_at_lower_band; missing if any of the 60 sessions lacks band-file coverage"}
+  market_breadth:            {version: 1.0.0, type: num, series: adjusted, cadence: daily, default_unknown: exclude, status: research_only,
+                              formula: "share of the market-eligible universe with price_vs_dma200 > 1, among those where it is known"}
 
 forensic_flags:   # numeric only; context surfaced in the brief, never used to clear a flag
-  flag_accrual_high:          {formula: "3y avg (pat_owners - cfo) / avg total_assets > 0.10"}
-  flag_receivables_diverging: {formula: "receivable_days_fy up > 20% YoY while opm_fy falls, 2 consecutive FY"}
-  flag_inventory_diverging:   {formula: "inventory_days_fy up > 25% YoY while revenue growth decelerates", applicable: "inventory > 0"}
-  flag_exceptional_habitual:  {formula: "exceptional_frequency >= 3"}
-  flag_dilution_persistent:   {formula: "issuance_share_growth_5y > 0.15"}
-  flag_auditor_churn:         {formula: "2+ statutory-auditor changes in 5 years excluding mandatory rotation, from auditor_event (Doc 02 s14)"}
-  flag_related_party_large:   {formula: "sum of related-party transaction values (Doc 02 s14) / revenue > 0.10", applicable: "RPT disclosure present for the period"}
-  flag_promoter_reducing:     {formula: "promoter holding down > 5 pp over the last 4 shareholding filings"}
+  flag_accrual_high:          {version: 1.0.0, formula: "mean over the latest 3 FY of (pat_owners - cfo) / mean(total_assets at FY start, FY end) > 0.10"}
+  flag_receivables_diverging: {version: 1.0.0, formula: "in each of the latest 2 FY: receivable_days_fy up more than 20% on the prior FY while opm_fy is lower than the prior FY"}
+  flag_inventory_diverging:   {version: 1.0.0, formula: "latest FY: inventory_days_fy up more than 25% on the prior FY while revenue growth is lower than the prior FY's revenue growth", applicable: "inventory > 0 at the latest FY end"}
+  flag_exceptional_habitual:  {version: 1.0.0, formula: "exceptional_frequency >= 3"}
+  flag_dilution_persistent:   {version: 1.0.0, formula: "issuance_share_growth_5y > 0.15"}
+  flag_auditor_churn:         {version: 1.0.0, formula: "2 or more statutory-auditor changes in the 5 years ending at the cutoff, excluding mandatory rotation, from auditor_event (Doc 02 s13)"}
+  flag_related_party_large:   {version: 1.0.0, formula: "sum of related-party transaction values for the latest FY (Doc 02 s13) / FY revenue > 0.10", applicable: "RPT disclosure present for the period"}
+  flag_promoter_reducing:     {version: 1.0.0, formula: "promoter holding fell by more than 5 percentage points from the 4th-latest to the latest shareholding filing"}
 
 deprecated:
   [pe_vs_own_5y_median, vol_adj_momentum, rel_strength_vs_nifty, rel_strength_6m, impact_cost_est,
    impact_cost_at_size, adv_20d_qty, pit_features_wide, candidate_id, atr_20, volatility_target,
    risk_per_position_pct, order_type, dma50, entry_fill, stop_level, rescale_price_levels_on_ex_date,
    rescale_quantities_on_ex_date, sleeve_capital, sleeve, auditor_event_5y, loops,
-   standard_equity_ca_policy_v1, ca_state_held_placeholder]
+   standard_equity_ca_policy_v1, standard_equity_ca_policy_v2, ca_state_held_placeholder,
+   substitute, next_executable_session]

@@ -107,6 +107,31 @@
     "data_fault_id": {
      "type": "string",
      "minLength": 1
+    },
+    "holdout_exposure_declaration": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "derived_from",
+      "sealed_results_seen"
+     ],
+     "properties": {
+      "derived_from": {
+       "type": "array",
+       "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*$"
+       }
+      },
+      "sealed_results_seen": {
+       "type": "array",
+       "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*$"
+       }
+      }
+     },
+     "description": "Lineages this card derives from, and lineages whose sealed holdout results its author has seen. The card's lineage inherits every exposure of both (Doc 04 s7)."
     }
    }
   }
@@ -236,7 +261,8 @@
      "evidence": {
       "type": "object",
       "required": [
-       "linter_report_sha256"
+       "linter_report_sha256",
+       "holdout_exposure_declaration"
       ]
      }
     }
