@@ -1,14 +1,15 @@
-# Issue Log & Traceability — Releases r5 / r5.1 / r5.2 / r5.3 / r5.4
+# Issue Log & Traceability — Releases r5 / r5.1 / r5.2 / r5.3 / r5.4 / r5.5
 
-*24 September 2026 · every finding from review indices 17–22 and 42–43, the independent assurance audit (F01–F16), Stage 0 (S0.x) and the four external reviews of r5.3 (§10), with its disposition*
+*24 September 2026 · every finding from review indices 17–22 and 42–43, the independent assurance audit (F01–F16), Stage 0 (S0.x), the four external reviews of r5.3 (§10) and the independent audit of r5.4 (§12), with its disposition*
 
 **Dispositions:** **Fixed** (where) · **Modified** (adopted with a change; reason given) · **Deferred** (named owner and gate) · **Rejected** (reason) · **Retained** (already correct; kept deliberately).
 
 **Verification.** Every "Fixed" item needs a test that would have caught it:
 
 - **Items the linter can express** get a regression case in `test_speclint.py`.
-- **Items it cannot express** get a golden case, with a planted mutant in `test_golden.py`: definitions, policies and semantics.
+- **Items it cannot express** get a golden case, with a planted mutant: `test_golden.py` for simulation and policy, `test_features.py` for feature definitions, `test_card_golden.py` for what a card means.
 - **Product-code items** get a test in `tests/`.
+- **Fixture adequacy** is checked by `mutation_check.py`: a new unexplained survivor is a missing case.
 
 Current counts are in the README. Sections below record history, and cite the revisions current when each finding was made.
 
@@ -307,10 +308,71 @@ The phase at which each open control becomes mandatory is in **Document 01 §17*
 
 | Owner | Items | Gate |
 | --- | --- | --- |
-| **Stage 0 / real-data golden cases** | Mixed consideration, overlapping actions, suspended successors; FY 2024-25 straddle; contract-note reconciliation; Doc 04 §15 items | Before any backtest counts as evidence |
-| **Document 05** | AI evidence schema, prompt-injection handling, model provenance, verification and confirmation workflow | Before M12 |
-| **Document 06** | Brief and silence presentation | Before the dashboard |
-| **Document 07** | DDL and migrations; idempotency and crash recovery (ingestion done in r5.4); deployment manifest; network policy; order-endpoint scans; container image and dependency lock; release signing; licence and source-provenance policy; mutation-score CI; feature unit tests; kill-switch atomicity (no stale opportunity survives a failed refresh); restore, replay and idempotency integration tests | Phased, per Document 01 §17 |
-| **Stage 0** | Every Doc 02 §17 verification item; S0.6–S0.8; B10 reissue semantics; zero-price rows; H1 special dividends; muhurat in rolling windows; Doc 02 r5 carrying whatever the real files teach; one registry and card-schema re-pin carrying H9, B7 and S0.10 | Before Stage 0 closes |
-| **Before the first calibration or backtest run** | B4 trial log and holdout enforcement; B5/B6 drawdown, Brinson–Fachler with cash, rolling-window share; B11 semantic run-manifest validator; B12 simulation identity | Document 01 §17 |
-| **Before shadow / production** | B7 (if not already done at the re-pin), H3–H6, the scheduled downloader, Document 07 operations | Document 01 §17 |
+| **Stage 0 / real-data golden cases** | Mixed consideration, overlapping actions, suspended successors; FY 2024-25 straddle confirmation; contract-note reconciliation (including STT rounding); Doc 04 §17 items; real ISIN changes in `security_lineage`; share-count history depth | Before any backtest counts as evidence |
+| **Document 05** | AI evidence schema, prompt-injection handling, model provenance, verification and confirmation workflow; counter-evidence coverage conditions | Before M12 |
+| **Document 06** | Brief and silence presentation; how coverage is shown | Before the dashboard |
+| **Document 07** | DDL and migrations; deployment manifest; network policy; order-endpoint scans; container image and dependency lock; release signing; licence and source-provenance policy (including automated NSE download); mutation check in CI; kill-switch atomicity; restore, replay and idempotency integration tests | Phased, per Document 01 §17 |
+| **Stage 0** | Every Doc 02 §17 verification item; S0.6–S0.8; B10 reissue semantics; no-trade row storage; the quarantine limit calibrated on real files; H1 special dividends; Doc 02 r6 carrying whatever the real files teach | Before Stage 0 closes |
+| **Before live capture** | `live_capture_start` set in the source policy | When the scheduled downloader starts |
+| **Before the first calibration or backtest run** | B4 trial log and holdout enforcement; B6 Brinson–Fachler with cash; B11 semantic run-manifest validator; B12 simulation identity; each card's measurement parameters pre-registered; snapshot persistence | Document 01 §17 |
+| **Before shadow / production** | H3–H6, the scheduled downloader, actual-versus-model divergence golden cases, Document 07 operations | Document 01 §17 |
+
+## 12. Release r5.5 — the independent audit of r5.4
+
+Each finding was reproduced against r5.4 before any change (`audit/repro/` in the working repository), and each fix has a test that fails against r5.4. The registry and card-schema re-pin planned for Stage 0 close (H9, B7, S0.10) is done here, in one step, because A2–A4 changed what a pin is.
+
+**Class A — structural**
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| A1 | No part of the package executed a card: a card with a 5% ROCE gate and a 4× ATR stop passed every check | **Fixed** — `reference_engine.py` evaluates each card's own expressions; `golden/card_cases.yaml` (hand-computed) and `test_card_golden.py` with planted card edits, including exactly that one, each caught; freeze criterion now requires card-level goldens (Doc 01 §8) |
+| A2 | Evaluation semantics undefined: three-valued AND/OR/NOT, `out_of_domain: fail` in exits and `persist`, stale/conflicted/not_applicable in gates, filters on unknown, `substitute`, weekly exit weekday and holidays, review triggers in model portfolios | **Fixed** — normative, versioned `evaluation_semantics` in the registry (inside every closure); Doc 01 §7; Kleene exits; an out-of-domain-fail input fires the exit unless `on_out_of_domain: review` (the `ltqv_v1` collapse case now sells); `substitute` removed; weekly rule; goldens C07–C19 |
+| A3 | Model-portfolio capacity undefined; the rank had no consumer; personal `OPEN` sizing values changed which momentum signals existed; actual recommendations sized on notional capital | **Fixed** — card `construction` (max positions, capacity by rank, residual cash); sizing redefined as pre-registered hypothesis parameters; the allocator converts a claim to a weight of your capital and re-runs size checks at your size; goldens C24–C26; Doc 01 §4, §9; Doc 04 §3 |
+| A4 | Cards pinned the whole registry file, so any edit re-versioned every card (and would burn holdouts); lineage was self-declared | **Fixed** — cards pin their registry closure; every entry versioned; registration declares derived and seen lineages, and the ledger inherits their exposure (Doc 04 §7); closure-scope test |
+
+**Class B — high priority**
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| B1 | Identity across ISIN changes undefined | **Fixed in specification** — `security_identity` in the registry; Doc 02 §4; CA policy v3; goldens G33a–b. Populated from real ISIN changes at S2 |
+| B2 | Linter bypasses: `substitute`, a composite in a waivable gate, the hard cap as a substring, look-ahead through `next_executable_session` | **Fixed** — all four rejected (regression cases); the cap is checked structurally *and* enforced by the engine; price functions accept only evaluation dates |
+| B3 | The panel dropped late first publications; backfill mode back-dated a same-day file | **Fixed** — the panel keeps the first version with its real `usable_from`, and `panel_as_of` masks it per decision; `backfill.min_age_days` and `live_capture_start` in source policy 1.2.0; tests |
+| B4 | The Parquet codec accepted naive timestamps; only one test used Parquet | **Fixed** — one pre-write validator for every codec (also refuses unknown columns, floats for decimals, bools for ints); every M2 case runs on every available codec; `pyarrow` pinned |
+| B5 | Fundamentals assembly underspecified; the basis fallback was timeless | **Fixed in specification and reference** — `period_panel_as_of` and `basis_for_window` (reference and `eos/pit.py`); Doc 02 §7; goldens G23a–d, G31a–c |
+| B6 | ROCE: loss-making cash shells scored 1.00; near-zero average CE gave 600%; negative prior CE gave −120% | **Fixed** — `roce_rule`: cap tested on average CE, only for EBIT > 0; universal 1.00 cap; goldens G17a–o |
+| B7 | Promotion rule sign-only (about 20% of zero-alpha strategies passed); trial count unused; Doc 03 and Doc 04 disagreed; `ltqv_v1` retired on a benchmark never tested at promotion | **Fixed** — Newey–West t hurdle scaled by logged trials; holdout consistency; minimum detectable alpha reported; Quality 30 test for `ltqv_v1`; Doc 03 §5 defers to Doc 04 §12; goldens G32a–f |
+| B8 | 34 of 36 card-read features had no executable definition; delivery %, window conventions, "transformative action" and calibration sampling ambiguous | **Fixed** — `reference_features.py` and `golden/feature_cases.yaml` for every card-read feature and flag, with an automated coverage check; `window_conventions`; ratio-of-sums delivery; valuation-transformative actions exclude rights issues; calibration `sampling: pooled_entry_sessions` |
+
+**Class C — medium**
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| C1 | Test adequacy: 67% mutation score; the PIT equality boundary and several branches unpinned; one planted mutant hard-coded its answer | **Fixed** — boundary and branch goldens; the hard-coded mutant replaced by a logic mutant; `mutation_check.py` with every survivor reviewed as equivalent in `golden/mutation_allowlist.yaml` (score 87% on a larger surface) |
+| C2 | Gate outcomes depended on float summation order | **Fixed** — gate, exit, filter and forensic-flag inputs quantised to 9 dp and compared in Decimal; goldens C10, F76 |
+| C3 | Momentum risk budget exceeded when ATR rose between signal and fill; stop unknown before the order | **Fixed** — `atr_pct_at_signal` drives sizing and the initial stop |
+| C4 | Rights intrinsic value: prose said P_ex, the reference used TERP | **Fixed** — TERP, with whole entitlements; golden G13c |
+| C5 | One bad row rejected the whole day | **Fixed** — `row_quarantine`, with a limit; `quarantined` delivery reason; tests |
+| C6 | Ingestion re-read the whole log for every file (quadratic backfill) | **Fixed** — only the trade date's partition is read; per-day cost now flat |
+| C7 | "None found" counter-evidence had no coverage definition | **Fixed in specification** — Doc 01 §12: coverage always shown; "none found" only under a stated coverage condition (Documents 05/06) |
+| C8 | Actual-versus-model claim divergence unspecified | **Fixed in specification** — Doc 01 §9 rules; golden cases are a Stage 3 gate |
+| C9 | A void predicate named a card's gate by number | **Fixed** — `void_parameters`, checked by the linter |
+
+**Class D — hygiene**
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| D1 | Drift the release test could not see (Doc 03's release line, prose counts, section references, the silence example) | **Fixed** — `tests/test_release.py` now checks every document's release line and every `Document 0N §M` / `Doc 0N sM` reference against real headings, including the registry's; counts removed from prose |
+| D2 | Environment pins unchecked | **Fixed** — `pyarrow` pinned; the execution contract states the environment |
+| D3 | STCG 15% marked verified from 2004; service-tax history; STT rounding | **Fixed** — 10% to March 2008; dated service-tax rates; STT rounding noted for the contract-note reconciliation |
+| D4 | `eval()` on fixture strings | **Fixed** — explicit fixture data |
+
+**Found while building r5.5**
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| R5.13 | Cross-sectional scoring lived only in Doc 02 prose, outside any card's pin | **Fixed** — registry `cross_sectional_scoring`, inside every closure |
+| R5.14 | A forensic flag at exactly its threshold fired because (0.1 + 0.1 + 0.1) / 3 > 0.10 in floating point | **Fixed** — the C2 quantisation applies inside features; golden F76 |
+| R5.15 | YAML reads a key named `on` as boolean true | **Fixed** in the feature fixtures (`on_date`); noted for every future YAML schema |
+| R5.16 | Several first-draft feature and card fixtures could not tell a mutant from the original (identical horizons in the ranking case; a cash-conversion coincidence between three and four years) | **Fixed** — found by the planted edits and the mutation check; fixtures changed so each mutant is distinguishable |
+| R5.17 | A no-promoter company had no defined pledge and would have failed `ltqv_v1` G5 | **Fixed** — pledge 0.0 with a `no_promoter` flag; golden F24 |
+| R5.18 | Under pytest, `tests/test_m2.py`'s `test` decorator was collected as a test and errored, and no M2 case ever ran (since r5.3) | **Fixed** — decorator renamed `case`; a `test_m2_suite` entry point runs every case on every available codec |

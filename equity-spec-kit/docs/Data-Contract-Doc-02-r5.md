@@ -1,8 +1,8 @@
-# Data Contract & Canonical Schema — Document 02 r4
+# Data Contract & Canonical Schema — Document 02 r5
 
-*Release r5.4 · 24 September 2026 · current state only; revision history is in the Issue Log*
+*Release r5.5 · 24 September 2026 · current state only; revision history is in the Issue Log*
 
-Governs every table, field, source, timing rule and feature definition referenced by Document 01 r7 and the strategy cards. A card owns its thresholds; how the compared value is computed is defined here and in `registry.yaml`. An identifier a card uses that is not in the registry fails the build.
+Governs every table, field, source, timing rule and feature definition referenced by Document 01 r8 and the strategy cards. The corrections the real Stage 0 files teach go into the next revision, r6, at Stage 0 close. A card owns its thresholds; how the compared value is computed is defined here and in `registry.yaml`. An identifier a card uses that is not in the registry fails the build.
 
 ## 1. Conventions
 
@@ -73,6 +73,7 @@ Exchange files describe trading that already happened, and the proposed order ex
 - **Recalibration.** Document 04 recalibrates these times, and `policy_lag`, to a conservative percentile of observed live latency once enough live history exists, and re-derives inferred values under the new policy version.
 - **Reporting.** Validation reports state what share of the evidence rests on inferred rather than observed availability.
 - **Pre-capture corrections.** Exchange archives serve only final, corrected files. Corrections made before live capture began cannot be recovered, and historical evidence carries that limitation explicitly.
+- **Backfill is only for history the system could not have captured live.** The loader refuses backfill inference for a file received on its own trade date, or fewer than `backfill.min_age_days` days after it — a same-day file is a live file. It also refuses it for any trade date on or after `backfill.live_capture_start`, which is set when the scheduled downloader begins. Otherwise a replay could "see" a file its live run did not have.
 
 **Usable in the run for D** if and only if `usable_from ≤ cutoff(domain of the row, D)`. Orders proposed by that run execute at `next_executable_session(D)`.
 
@@ -82,7 +83,7 @@ Exchange files describe trading that already happened, and the proposed order ex
 
 ## 4. Security master and historical state
 
-- **Identity is the ISIN.** An ISIN change creates a new row linked by `successor_isin`. Symbols, BSE codes, broker tokens and former names are aliases with half-open validity windows; overlapping windows are errors.
+- **Identity is the `security_id`; the ISIN is its current identifier.** A face-value change normally allots a new ISIN in India, as do some capital reductions and schemes. `security_lineage(security_id, isin, valid_from, valid_to, reason, ca_event_id)` keeps half-open, non-overlapping ISIN windows per security. Features, universe membership and its hysteresis, claims, cooldowns, `holding_days`, model positions, the ledger holding, tax lots and stop and price state are keyed by `security_id`; raw observations and broker trades keep the reported ISIN. Across an ISIN change the price series joins with the action's `f` applied, held quantity is divided by `f`, price state is multiplied by `f`, and holding periods, cooldowns and tax-lot dates carry unchanged (registry `security_identity`; golden cases G33a–b). A merger target converts into the successor's `security_id` at the scheme ratio on the record date. Symbols, BSE codes, broker tokens and former names are aliases with half-open validity windows; overlapping windows are errors.
 - **Scope.** NSE main-board equity. Excluded entirely: SME listings, ETFs, REITs, InvITs, preference shares, debt. **Trade-for-trade series stay in the research universe but are excluded from the market-eligible universe.** The reason is platform-level, not strategy-specific: the exchange places securities there under surveillance, every trade settles compulsorily by delivery, and there is no intraday netting, so their trading conditions differ from the rest of the universe for every strategy — not only for those reading delivery data.
 - **State tables**, all queried as-of, all with source coverage: `security_classification`, `index_membership` (benchmarks only), `derivatives_eligibility`, `surveillance_status`, `restriction_state` (manual, with author and timestamp).
 - **Surveillance before the frameworks existed.** `surveillance_framework(framework, start_date)` records when each framework (ASM long-term, ASM short-term, GSM) began; exact dates are verified at Stage 0. For dates before a framework's start, `surveillance_stage` is **known `none`** — nothing existed to be under. After the start, a date without list coverage is `missing`. Treating the pre-framework years as missing would fail every security for half the history.
@@ -107,19 +108,19 @@ Exchange files describe trading that already happened, and the proposed order ex
 
 **Issuance-neutral share count.** `shares_issuance_neutral` removes split, bonus and consolidation effects, so it moves only on genuine issuance or cancellation. Dilution measures read it.
 
-**Position policy `standard_equity_ca_policy_v2`**, applied centrally by M14 and M15:
+**Position policy `standard_equity_ca_policy_v3`**, applied centrally by M14 and M15:
 
 | Action | Held quantity | Price-state values | Cash / other | Valuation blackout |
 | --- | --- | --- | --- | --- |
-| Split, bonus, consolidation | ÷ f; fractions paid as cash in lieu at the post-action price, fraction × P_cum × f | × f | — | — |
+| Split, bonus, consolidation | ÷ f; fractions paid as cash in lieu at the post-action price, fraction × P_cum × f; a new ISIN continues the same `security_id` | × f | — | — |
 | Special dividend | unchanged | × f | cash credited | — |
 | Ordinary dividend | unchanged | unchanged | cash credited | — |
-| Rights issue | unchanged until allotment | × f | entitlement valued and sold: at its traded close on its last trading session where rights entitlements were listed (2020 onward), else intrinsic max(0, P_ex − S) | ex-date until allotment reaches `shares_outstanding` |
+| Rights issue | unchanged until allotment | × f | floor(held × a ÷ b) whole entitlements (fractions ignored), valued and sold: at the traded close on the last trading session where rights entitlements were listed (2020 onward), else intrinsic max(0, TERP − S) — TERP is known before trading and deterministic | ex-date until allotment reaches `shares_outstanding` |
 | Demerger (parent held) | parent unchanged | parent × f | resulting-entity **stub** of held × r whole shares, where r is the scheme ratio in resulting shares **per parent share**. Implied price per resulting share = (P_cum − P_discovered) ÷ r; a fractional entitlement is cash in lieu at that price, so the total detached value is always held × (P_cum − P_discovered). State `unlisted_stub`, non-tradable, excluded from caps and capacity; exited at the open of its first executable session after listing | parent valuation features until four post-demerger quarters are filed |
 | Merger (held security is target) | converted at scheme ratio on record date | series ends | if the successor is not strategy-qualified for the holding strategy: exit at the open of the target's last announced trading session | — |
 | Capital reduction | per scheme | × f | per scheme | until the next half-yearly balance sheet reflects it |
 
-**Why valuation blackouts exist.** After a demerger, market cap falls to the continuing business while trailing profit still includes the business that left, so earnings yield jumps with nothing becoming cheaper. During a blackout, `earnings_yield_ttm`, `ey_vs_own_5y_median` and `ev_ebitda_vs_sector` are `out_of_domain`. `ey_median_5y` excludes blackout sessions and every session before the latest transformative action, so the historical comparison covers only the continuing business.
+**Why valuation blackouts exist.** After a demerger, market cap falls to the continuing business while trailing profit still includes the business that left, so earnings yield jumps with nothing becoming cheaper. During a blackout, `earnings_yield_ttm`, `ey_vs_own_5y_median` and `ev_ebitda_vs_sector` are `out_of_domain`. `ey_median_5y` excludes blackout sessions and every session on or before the latest **valuation-transformative** action — a demerger, a capital reduction, an amalgamation in which the company is the transferee, or a merger in which it is the target (registry `valuation_transformative_actions`). The historical comparison therefore covers only the continuing business. A rights issue is not valuation-transformative; it gets only its blackout, so a small rights issue does not remove a company from `ltqv_v1` for three years.
 
 **Corporate-action and dividend cash has two dates.** Economic return is recognised on the ex-date; **cash becomes spendable only on the payment or credit date**. A model portfolio that spends a dividend before it is paid has created liquidity that did not exist. Each expected receipt is written to `expected_cash_event` (amount, ex-date, expected credit date, source action), so the later actual credit in M15 matches an expectation instead of raising a reconciliation break.
 
@@ -131,14 +132,16 @@ Exchange files describe trading that already happened, and the proposed order ex
 
 **Delivery is its own table.** `delivery_observation` (`isin` · `trade_date` · `version_no` · `delivery_qty` · `traded_qty_reported` · the same availability fields) is versioned independently. The delivery file is a separate source with its own arrival time, corrections and coverage. Were it a column on the price row, a late delivery file would look like a price correction. Its rows are mapped to ISINs through the same trading date's bhavcopy.
 
-**Resolution.** Per `(isin, trade_date)`, the resolved view takes the highest version whose `usable_from` is at or before the cutoff. It joins delivery with `delivery_state` (`known`, or `missing` with reason `no_source_coverage` / `absent_in_covered_file`). There are two read contracts, because they answer different questions:
+**Row quarantine.** A row failing a row-level check is written to `row_quarantine` with its reason, instead of rejecting the day's file. Row-level checks are a malformed or duplicate ISIN, an impossible OHLC (including zero prices), a negative quantity, or an unmapped or invalid delivery row. The file is rejected — nothing written — only on a structural fault (header, mixed dates, the canary prefix), or when the quarantined share exceeds `quality.max_quarantine_share`. How a genuine no-trade row is stored is settled on the real files (S1b).
+
+**Resolution.** Per `(isin, trade_date)`, the resolved view takes the highest version whose `usable_from` is at or before the cutoff. It joins delivery with `delivery_state` (`known`, or `missing` with reason `no_source_coverage`, `absent_in_covered_file`, `quarantined` or — in a panel read — `not_yet_available`). There are two read contracts, because they answer different questions:
 
 | Contract | Cutoff | Use |
 | --- | --- | --- |
 | `history_known_as_of(E)` (Document 02 name `price_raw_resolved`) | E's cutoff, for every trade date up to E | The exact input of **one** decision at E. A correction received by E replaces the original print, even for earlier bars |
-| `point_in_time_panel(start, end)` | Each trade date's **own** cutoff | A look-ahead-free panel for a **sequence** of decisions. Each bar is taken as first known, so corrections a later decision could have seen are ignored — a conservative choice |
+| `point_in_time_panel(start, end)` with `panel_as_of(panel, E)` | Each trade date's **own** cutoff; a bar first published after it keeps its first version and real `usable_from` | A look-ahead-free panel for a **sequence** of decisions. Each bar is taken as first known, so corrections a later decision could have seen are ignored — a conservative choice. `panel_as_of` masks what decision E could not yet use; no bar a later decision had is ever dropped |
 
-A sequence of historical decisions uses either the exact per-date view or the panel. It must never use `history_known_as_of(end)` over the whole range, because every earlier decision would then see corrections that arrived after it. Everything downstream reads a resolved view.
+A sequence of historical decisions uses either the exact per-date view or the masked panel. It must never use `history_known_as_of(end)` over the whole range, because every earlier decision would then see corrections that arrived after it. Everything downstream reads a resolved view.
 
 **Series.**
 
@@ -177,25 +180,39 @@ pat_underlying   = pat_owners - exceptional_net * (1 - etr)
 
 **Restatements** append a version with its own availability fields. A derived figure uses the component versions usable at the row's cutoff.
 
-**Wide view key:** `(isin, basis, effective_from)`, with `usable_from` materialised.
+**Point-in-time assembly of periods.** Facts are stored as `fact(isin, basis, fact_code, period_start, period_end, version, usable_from, …)`. A feature over several periods (TTM, three or five fiscal years, a prior year's balance sheet) is built from the **period panel as of the cutoff**: for each period, its latest version usable at the cutoff (`period_panel_as_of`). A restatement of an old period that arrives after a newer period was filed replaces that old period only; it never becomes "the latest row" (golden cases G31a–c).
+
+**Basis, decided as of the cutoff for the whole window.** A multi-period feature uses consolidated figures if consolidated figures usable at the cutoff exist for every period of its window. It uses standalone figures if none of them has consolidated figures. If the window would mix bases, it is `missing`, never a blend (`basis_for_window`; golden cases G23a–d). The decision uses only what was usable at the cutoff, never today's knowledge that a company later began consolidating.
+
+**Wide view key:** `(isin, basis, effective_from)`, with `usable_from` materialised; it serves single-row facts and the canonical join of Document 01 §14.
 
 ## 8. Features
 
-`registry.yaml` owns every feature's type, series, cadence, formula, domain, `out_of_domain` outcome and default Unknown behaviour. Cards override Unknown behaviour only where the strategy needs different treatment. There is no implicit platform fallback.
+`registry.yaml` owns every feature's version, type, series, cadence, formula, domain, `out_of_domain` outcome and default Unknown behaviour. Cards override Unknown behaviour (`exclude`, `fail` or, for secondary inputs, `penalise`) only where the strategy needs different treatment. There is no implicit platform fallback. **`reference_features.py` implements every feature and forensic flag a card reads, and `golden/feature_cases.yaml` fixes each with hand-computed answers; `test_features.py` checks that every card-read feature has golden cases.** M6 must reproduce them all.
 
-**Materiality.** Every feature is **material** unless `registry.yaml` lists it under `secondary_features`. A material input may never be given `penalise`, and may never feed a gate that waives on unknown. `penalise` is defined exactly: each penalised input that is not known lowers `data_confidence` one band (`high → medium → low → insufficient`); below `medium` a claim is recorded but not shown. Confidence never alters a score or a rank.
+**Rolling windows** follow the registry's `window_conventions`:
 
-**Value states:** `known`, `missing`, `stale`, `conflicted`, `not_applicable` (meaningless for this entity type; never implies failure), `out_of_domain` (inputs valid but outside the range where the feature means anything). `out_of_domain` resolves by the feature's declared outcome: `fail` fails any gate reading it; `drop` removes it from composites and makes it unknown for any gate.
+- A session is an executable exchange session. Muhurat sessions are never units, and their bars are stored but not used.
+- A security is *present* when a resolved bar exists for it. A suspended or untraded session is absent. A listed-but-untraded session counts as present with zero traded value for ADV.
+- `X(t−k)` falls back to the last present value within 5 sessions, else missing.
+- Volatility uses log returns between consecutive present sessions only, with a sample standard deviation × √250.
+- Each windowed feature states its minimum presence.
+- `delivery_pct_20d_avg` is a volume-weighted ratio of sums over the last 20 sessions with volume > 0 and known delivery, with ≥ 15 such sessions. It is not a mean of daily ratios, in which a ten-share day would weigh like a ten-lakh day.
+
+**Materiality.** Every feature is **material** unless `registry.yaml` lists it under `secondary_features`. A material input may never be given `penalise`, and may never feed a gate that waives on unknown, directly or through a composite. `penalise` is defined exactly: each penalised input that is not known lowers `data_confidence` one band (`high → medium → low → insufficient`); below `medium` a claim is recorded but not shown. Confidence never alters a score or a rank.
+
+**Value states:** `known`, `missing`, `stale`, `conflicted`, `not_applicable` (meaningless for this entity type; never implies failure on its own), `out_of_domain` (inputs valid but outside the range where the feature means anything). `out_of_domain` resolves by the feature's declared outcome: `fail` fails any gate reading it and fires any exit reading it; `drop` removes it from composites and makes it unknown for any gate. How gates, exits and filters treat each state is fixed in the registry's `evaluation_semantics` (Document 01 §7): `stale`, `conflicted` and `not_applicable` are non-known in a gate.
 
 **Domain rules needing more than a line:**
 
 | Feature | Rule |
 | --- | --- |
-| `roce_3y_avg`, `roce_hy_ttm` | Equity ≤ 0 → `out_of_domain: fail`. Positive equity with capital employed ≤ 5% of total assets — a cash-rich, asset-light business — → value **1.00, capped**, flag `cash_rich_capped`. Such businesses have exceptionally high returns; failing them would exclude exactly what the strategy seeks |
+| `roce_3y_avg`, `roce_hy_ttm` | Per the registry's `roce_rule`. Equity ≤ 0 → `out_of_domain: fail`. The cash-rich test is on the **average** capital employed actually used as the denominator: average CE ≤ 5% of average total assets (inclusive) with underlying EBIT > 0 → **1.00, capped**, flag `cash_rich_capped`; with EBIT ≤ 0 → `out_of_domain: fail`, since a cash shell earning nothing is not a quality business. Every other value is capped at 1.00. This avoids both failing excellent cash-rich businesses and rewarding loss-making treasuries or near-zero denominators (golden cases G17a–o) |
 | `interest_coverage` | Capped at 100; zero finance costs → 100 and `no_finance_cost = true` |
-| `ev_ebitda_vs_sector` | Peers: same sector code in the market-eligible universe on the date, before any card's exclusions; non-positive-EBITDA peers excluded; ≥ 8 valid peers; peer median > 0; not in blackout; otherwise `drop` |
+| `ev_ebitda_vs_sector` | Peers: same sector code in the market-eligible universe on the date, before any card's exclusions, excluding the security itself; non-positive-EBITDA peers excluded; ≥ 8 valid peers; peer median > 0; not in blackout; otherwise `drop` |
+| `promoter_pledge_pct` | A company with no promoter holding has 0.0 — nothing can be pledged — so a professionally managed company does not fail a pledge gate |
 | `earnings_yield_ttm`, `ey_vs_own_5y_median` | `out_of_domain` during a valuation blackout (§5) |
-| `ey_median_5y` | Median of stored `earnings_yield_ttm` over 1,250 sessions, excluding blackout sessions and sessions before the latest transformative action; ≥ 750 known values, else `drop`. Never loosened to fill early history (§14) |
+| `ey_median_5y` | Median of stored `earnings_yield_ttm` over 1,250 sessions, excluding blackout sessions and sessions on or before the latest valuation-transformative action (§5); ≥ 750 known values, else `drop`. Never loosened to fill early history (§14) |
 | `rel_strength_6m_vs_nifty200_tri` | (TR_stock(t−21) ÷ TR_stock(t−126)) − (TR_index(t−21) ÷ TR_index(t−126)); the skip month applies to both |
 | `atr_pct_20`, volatility features | Strictly positive, with minimum session coverage |
 | `earnings_yield_spread` | Decimal difference; 0.021 = 2.1 percentage points |
@@ -206,9 +223,9 @@ pat_underlying   = pat_owners - exceptional_net * (1 - etr)
 
 ## 9. Cross-sectional scoring
 
-Per feature, per evaluation date:
+The registry's `cross_sectional_scoring` block is normative and is inside every card's closure. Per feature, per evaluation date:
 
-1. **Population:** the strategy universe on that date — market-eligible, minus the card's sector exclusions and filters, before gates.
+1. **Population:** the strategy universe on that date — market-eligible, minus the card's sector exclusions and the securities whose universe filters are FALSE (an UNKNOWN filter keeps a security in the population but not among the candidates), before gates.
 2. **Contributors:** population members with `known` values.
 3. **Minimum:** fewer than 30 contributors → the z-score is `missing` for all that day.
 4. **Winsorise** at the 1st and 99th percentiles, computed with linear interpolation between order statistics (`numpy.quantile(method="linear")`, DuckDB `quantile_cont`).
@@ -239,7 +256,9 @@ Total shares are used, not free float, so this is the *point-in-time top-N marke
 
 Partitioned Parquet with a `_manifest.json` per partition. There is no persistent database file.
 
-**Every logical write is one all-or-nothing batch.** One source file, for example, writes observations, conflicts, coverage and its ingestion-log entry. The batch runs in three steps:
+**One pre-write validator for every codec.** Before any part is written, every row is checked against its table schema. Naive timestamps, unknown columns, floats where the schema says decimal and booleans where it says integer are refused, on Parquet exactly as on the JSONL test codec.
+
+**Every logical write is one all-or-nothing batch.** One source file, for example, writes observations, conflicts, quarantined rows, coverage and its ingestion-log entry. The batch runs in three steps:
 
 1. Its parts are staged: written to temporary files, fsynced and renamed, but listed by no manifest.
 2. One batch record is written atomically. **This is the commit point.**
@@ -294,7 +313,7 @@ No intraday card can pass `experimental` until these are implemented; the linter
 
 ## 17. Quality checks, Stage 0 acceptance and verification items
 
-**Every ingestion:** OHLC ordering and uniqueness of `(isin, trade_date, version_no)`; row count within ±5% of the prior day (kill switch below 90%); close-to-close moves beyond 3× the band with no corporate action flagged for review; adjusted-series continuity at ex-dates within ±25%, or 5× the 60-day median absolute return; the balance-sheet identity (assets = liabilities + owners' equity + NCI) within 1%; normalised quarters summing to FY within 0.5%; share-count reconciliation within 1%; allocations summing to fills; alias windows not overlapping; `usable_from ≥ filed_at` everywhere.
+**Every ingestion:** OHLC ordering and ISIN validity per row (a failing row is quarantined, §6; the file is rejected above the quarantine limit); uniqueness of `(isin, trade_date, version_no)`; row count within ±5% of the prior day (kill switch below 90%); close-to-close moves beyond 3× the band with no corporate action flagged for review; adjusted-series continuity at ex-dates within ±25%, or 5× the 60-day median absolute return; the balance-sheet identity (assets = liabilities + owners' equity + NCI) within 1%; normalised quarters summing to FY within 0.5%; share-count reconciliation within 1%; allocations summing to fills; alias windows not overlapping; `usable_from ≥ filed_at` everywhere.
 
 **Stage 0 acceptance:**
 
@@ -321,14 +340,15 @@ No intraday card can pass `experimental` until these are implemented; the linter
 
 ## Appendix A — Registry
 
-`registry.yaml` 2.2.0 in the spec kit is authoritative and is not reproduced here. It carries:
+`registry.yaml` 3.0.0 in the spec kit is authoritative and is not reproduced here. Every entry carries its own version. It holds:
 
-- 41 features, 8 forensic flags and 11 typed functions (`impact_cost` defined by Document 04 §5 as `impact_model_v1`)
-- the two cutoff domains, the materiality list and the confidence policy
-- 23 runtime identifiers with owners and initialisation/update rules
-- 17 enums, with literals always namespaced (`surveillance_stage.none`)
-- 5 strategy classes, 5 data resolutions and 5 triggers
-- 4 benchmarks, 29 sector codes and 2 sizing methods
-- 4 void events with predicates, the corporate-action policy, and 24 retired identifiers
+- **Features and functions:** 41 features and 8 forensic flags; 10 typed functions, with the date arguments of price functions restricted (`impact_cost` is `impact_model_v1`, Document 04 §5).
+- **Normative blocks:** `evaluation_semantics`, `window_conventions`, `cross_sectional_scoring`, the two cutoff domains, the materiality list and the confidence policy.
+- **Runtime identifiers:** 26, with owners and initialisation/update rules.
+- **Enums:** 21, with literals always namespaced (`surveillance_stage.none`).
+- **Classes and triggers:** 5 strategy classes, 5 data resolutions and 5 triggers.
+- **Vocabularies:** 4 benchmarks, 29 sector codes and 2 sizing methods.
+- **Events, identity and policy:** 4 void events with predicates and declared parameters; security identity; valuation-transformative actions; the corporate-action policy v3.
+- **Retired identifiers:** 27.
 
-To change it: edit the file, update each card's pinned SHA-256 (the linter fails every card otherwise), run the suite, and add a regression case for whatever the change prevents.
+To change it: edit the file and run `python3 speclint.py`. A card whose closure the edit touched fails with its new closure hash. Re-validate that card, version it if its meaning changed, re-pin it, and register the new version (`register_card.py`). Cards whose closure the edit did not touch are unaffected. Add a regression or golden case for whatever the change prevents.

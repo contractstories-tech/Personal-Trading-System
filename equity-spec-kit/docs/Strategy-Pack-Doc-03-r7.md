@@ -1,16 +1,16 @@
-# Strategy Pack — Document 03 r6
+# Strategy Pack — Document 03 r7
 
-*Release r5.2 · 21 September 2026 · current state only · card sections generated from `strategies/*.yaml` by `render_cards.py` · cards pinned to registry 2.2.0*
+*Release r5.5 · 24 September 2026 · current state only · card sections generated from `strategies/*.yaml` by `render_cards.py` · cards pinned to their registry 3.0.0 closures*
 
 ## 1. How strategies work
 
-A strategy is an independent method of detecting an opportunity. It is not a category a company belongs to, and not a pot your capital is split into. Each strategy is one YAML card: hypothesis, data, triggers, gates, optional ranking, sizing on notional capital, a proposed execution rule, exits, expiry, benchmark, and retirement rule.
+A strategy is an independent method of detecting an opportunity. It is not a category a company belongs to, and not a pot your capital is split into. Each strategy is one YAML card: hypothesis, data, triggers, gates, optional ranking, sizing and construction of its measurement portfolio, a proposed execution rule, exits, expiry, benchmark, and retirement rule.
 
 **The YAML is the only executable source of a strategy.** The card sections in §7 are generated from it, each stamped with the card's SHA-256, and `render_cards.py --check` fails the build if this document and the YAML ever differ. The prose below explains the strategies; where it and a card disagree, the card governs.
 
-Every card pins the registry it was compiled against by version and hash. A registry change that touches a card forces it to be re-linted and re-validated.
+Every card pins the hash of its **registry closure** — the registry entries it actually uses, plus the evaluation semantics. A registry change inside that closure forces the card to be re-validated; a change elsewhere (a feature for another strategy, say) leaves it untouched. What the card *means* is fixed by executing it: `test_card_golden.py` runs each card's own expressions against hand-computed cases.
 
-**Both current strategies are `experimental`:** they may be backtested, and they may not reach your feed. Every threshold below is a pre-registered hypothesis. Once formal testing begins, thresholds are frozen; any change is a version bump with a logged reason, including changes prompted by disappointing results.
+**Both current strategies are `experimental`** — per their lifecycle records in `lifecycle/transitions/`, the only place a status lives: they may be backtested, and they may not reach your feed. Every threshold below is a pre-registered hypothesis. Once formal testing begins, thresholds are frozen; any change is a version bump with a logged reason, including changes prompted by disappointing results.
 
 ## 2. Why these two first
 
@@ -41,15 +41,16 @@ Ranking weights: 50% quality, 30% value, 20% consistency — each a composite of
 **Definitions that matter** (Document 02 governs):
 
 - ROCE uses underlying EBIT over average capital employed, **including lease liabilities**, so returns are measured consistently before and after Ind AS 116.
-- A cash-rich business whose capital employed has shrunk below 5% of assets gets a capped ROCE of 1.00 and passes G2, rather than failing it. Negative equity fails.
+- A **profitable** cash-rich business whose average capital employed is at most 5% of average assets gets a capped ROCE of 1.00 and passes G2, rather than failing it. A loss-making cash shell fails; negative equity fails; every ROCE is capped at 1.00, so a near-zero denominator cannot produce 600%.
 - Valuation is blacked out after demergers, rights issues and capital reductions until comparable financials exist, so a demerger cannot make a stock look falsely cheap.
-- The five-year earnings-yield median covers only the continuing business.
+- The five-year earnings-yield median covers only the continuing business: it restarts after a demerger, capital reduction or amalgamation, but not after a rights issue.
+- A company with no promoter has a pledge of zero and passes G5.
 - **The audit-opinion gate has been removed from v1, not softened.** It previously waived wherever opinion data was missing — which, across a backtest, would have validated a strategy *without* that check while the card claimed to have one. A material input may not be waived, so the gate returns as a new card version once the extraction path in Document 02 §13 exists and has coverage. Auditor *resignations*, which come from structured exchange disclosures, remain a blocking gate.
 - Forensic flags fire on the numbers alone. Dilution is measured on an issuance-neutral share count, so a bonus issue is never mistaken for dilution.
 
 **Entry.** Three tranches of one third each. Quantities convert at the prior session's close, with the limit only as a price cap — and are additionally capped so that even a fill at the highest permitted price cannot breach the hard position limit. Tranche 1 re-evaluates every gate on every attempt, for up to 30 sessions, and voids the signal if any gate fails. Tranches 2 and 3 start 21 and 42 sessions after tranche 1 and retry for 10 sessions each. A failed recheck skips that session. When retries run out, the remaining tranches are cancelled and the holding is kept. The final tranche takes the remainder, so no shares are stranded by rounding.
 
-**Exits:**
+**Exits** (Kleene logic; an exit also fires when a thesis input turns out-of-domain in the failing direction — negative equity, three years of losses — so a collapsing holding is sold, not held):
 
 - ROCE below 12% for two consecutive half-years
 - Cash conversion below 0.50
@@ -59,13 +60,15 @@ Ranking weights: 50% quality, 30% value, 20% consistency — each a composite of
 
 A 60-session cooldown follows any exit.
 
+**Construction.** The measurement portfolio holds at most `max_positions` names (pre-registered before the first design evaluation), filled in rank order when more qualify than fit.
+
 **History.** 7 warm-up years (the 7-year operating history and 5-year windows need them) plus 9 evaluable years, of which 3 are holdout: 16 years of history in total.
 
 ## 4. `mom_v1` — momentum
 
 **Hypothesis.** Cross-sectional relative strength persists over 3–12 months because information diffuses slowly. Volatility scaling separates persistent trend from noise, and skipping the latest month avoids short-term reversal. In Indian mid-caps, illiquidity and circuits contaminate the effect, so liquidity gating is part of the signal.
 
-**Triggers.** New entries are evaluated at Friday's close. Exits are evaluated every session.
+**Triggers.** New entries are evaluated at the week's last session on or before Friday (Thursday when Friday is a holiday or a muhurat-only day). Exits are evaluated every session; the weekly momentum exit on the same weekly session.
 
 **Gates:**
 
@@ -79,11 +82,11 @@ A 60-session cooldown follows any exit.
 
 After provisional sizing, two further checks apply: estimated impact cost ≤ 0.35% and participation ≤ 10% of average traded value.
 
-**Delivery bands, pre-registered.** Each band is the **25th percentile** of 20-day delivery percentage over the design period only. It is computed separately for F&O-eligible and non-F&O names, using point-in-time eligibility, and never from the holdout. The quantile is fixed now, before any data is examined, so the choice cannot be fitted.
+**Delivery bands, pre-registered.** Delivery percentage is the 20-session volume-weighted ratio of delivered to traded shares. Each band is the **25th percentile** of it over the design period only, pooled over every security and weekly entry session in the strategy universe (`sampling: pooled_entry_sessions`). It is computed separately for F&O-eligible and non-F&O names, using point-in-time eligibility, and never from the holdout. The quantile and the sampling are fixed now, before any data is examined, so the choice cannot be fitted.
 
-**Sizing.** Quantity is the smallest of three: the target value at the reference price, the hard position cap at the highest permitted fill price, and the stop-risk budget at that same worst-case fill. The risk taken can therefore never exceed the budget because the fill came in higher than the reference.
+**Sizing.** Quantity is the smallest of three: the target value at the reference price, the hard position cap at the highest permitted fill price, and the stop-risk budget at that same worst-case fill. Sizing and the initial stop use the same ATR, the one known at the signal, so the risk taken can never exceed the budget, whatever permitted price the fill comes in at.
 
-**Stop.** The initial stop is 2.5 × the ATR percentage below the entry basis, and is tested from the fill session onward. It then trails 2.5 × the ATR-at-peak percentage below the highest close since entry. ATR is frozen at the moment each new high is set, so post-breakout calm cannot drag the stop upward. The stop is tested against the previous session's value before it updates. It never moves down. All price levels are adjusted on corporate-action ex-dates.
+**Stop.** The initial stop is 2.5 × the signal-date ATR percentage below the entry basis — known before the order, so the brief can state it — and is tested from the fill session onward. It then trails 2.5 × the ATR-at-peak percentage below the highest close since entry. ATR is frozen at the moment each new high is set, so post-breakout calm cannot drag the stop upward. The stop is tested against the previous session's value before it updates. It never moves down. All price levels are adjusted on corporate-action ex-dates.
 
 **Other exits:**
 
@@ -93,6 +96,8 @@ After provisional sizing, two further checks apply: estimated impact cost ≤ 0.
 - Serious surveillance
 
 A 20-session cooldown follows every exit, including the time exit.
+
+**Construction.** When more names qualify on a Friday than the measurement portfolio's `max_positions` allows, the rank — 60% 12-month and 40% 6-month volatility-adjusted momentum, cross-sectional z-scores — decides which fill. That is what makes the strategy cross-sectional, as its hypothesis says, rather than a pure threshold filter.
 
 **History.** 1 warm-up year plus 11 evaluable years, of which 3 are holdout: 12 years of price history.
 
@@ -105,44 +110,56 @@ Two different questions, deliberately kept apart:
 
 A strategy does not become statistically invalid because tax rules change. It may become unattractive for you, and the system shows that separately.
 
-**Per-strategy economic tests.** Document 04 fixes the exact statistics.
+**Per-strategy economic tests.** Document 04 §12 governs; in summary:
 
-- **`ltqv_v1`:**
-  - Positive alpha after costs versus Nifty 500 TRI over the evaluable period, and in most rolling 3-year windows.
-  - Positive alpha versus Nifty 200 Quality 30 TRI.
-  - **Positive selection effect in a Brinson–Fachler attribution.** The strategy excludes about ten sectors, so allocation effects alone must not count as skill.
-  - Drawdown no worse than the benchmark's; turnover consistent with a multi-year hypothesis.
-  - Positions still open at holdout end are marked and reported separately.
-- **`mom_v1`:**
-  - Positive alpha after costs versus Nifty 200 Momentum 30 TRI.
-  - Sharpe above the benchmark's.
-  - Survives the circuit-aware exit model and doubled impact costs.
-  - Turnover realistic at intended size.
+- **Every strategy** must clear a pre-registered statistical hurdle on its design-period alpha. The hurdle rises with the number of design trials logged for its lineage. Its sealed-holdout alpha must be positive and consistent with the design estimate.
+- **`ltqv_v1`** additionally:
+  - positive alpha versus Nifty 200 Quality 30 TRI, the benchmark its retirement rule uses;
+  - positive in at least 60% of rolling 3-year windows;
+  - **positive Brinson–Fachler selection**, because the strategy excludes about ten sectors and allocation effects alone must not count as skill;
+  - drawdown no worse than the benchmark's plus 5 percentage points;
+  - turnover below 40% a year;
+  - positions still open at holdout end reported separately.
+- **`mom_v1`** additionally:
+  - Sharpe above the benchmark's;
+  - survives doubled costs, doubled impact and the circuit-aware exit model.
 
 **Decomposition** against published factor indices is reported for both. If a strategy can be reproduced as an index plus a tilt, buying the index is the better decision.
 
-## 6. Values only you can set
+## 6. Hypothesis parameters, and values only you can set
 
-These stay `OPEN` until you set them, and a card cannot pass `experimental` while any remain:
+**Measurement parameters — part of each hypothesis, not personal values.** Each card's `sizing` params and `construction.max_positions` are `OPEN`: the measurement capital in INR, the target volatility contribution or risk to the stop, the maximum position, and the maximum number of positions. They define the model portfolio a strategy is *measured* on:
 
-- **In each card's sizing block:** notional capital, the target volatility contribution or risk to the stop, and maximum position size. Notional capital only sizes the strategy's model portfolio for measurement.
-- **In `portfolio_policy.yaml`:** your total capital; your caps per stock, sector, promoter group and position count; your drawdown limit and response; your cash floor. The per-strategy cap defaults to `NONE`: there are no capital buckets unless you choose them.
+- the measurement capital decides which impact and participation checks pass;
+- the concentration and capacity rule shape alpha and drawdown.
 
-Set these from your own circumstances, never from backtest results.
+They are set once, **before the first design evaluation**, recorded in a new card version, and never changed after seeing results, except as a new version with fresh holdout data. Choose them to represent a sensible deployment scale for the strategy, not your personal risk appetite. A card cannot pass `experimental` while any remain `OPEN`.
+
+**Your values — only in `portfolio_policy.yaml`.** These are:
+
+- your total capital;
+- your caps per stock, sector, promoter group and position count;
+- your minimum position;
+- your drawdown limit and response;
+- your cash floor;
+- your trim tolerance.
+
+The per-strategy cap defaults to `NONE`: there are no capital buckets unless you choose them. A strategy's claim reaches you as a **weight** of its measurement capital, applied to your total capital and then capped by your policy. Changing these values changes your recommendations but never a strategy's measured results.
+
+Set every value from your own circumstances, never from backtest results.
 
 ## 7. Generated cards
 
 The sections below are generated by `render_cards.py` from `strategies/*.yaml`, and parity is checked in CI. Do not edit them here.
 
-<!-- generated from strategies/ltqv_v1.yaml sha256:c74f074262d4b9b4c49b0609e28e9114fe1b6b09dcf72e139098660a049faa00 -->
+<!-- generated from strategies/ltqv_v1.yaml sha256:a3023cc488c046bf9bbe7c803fc3a93918f1bf86bce66e29b1b2e02c404b91da -->
 ```yaml
-schema_version: 5
+schema_version: 6
 code: ltqv_v1
 strategy_class: fundamental_long_term
-version: 1.0.0-prevalidation.7
-lineage: ltqv
-status: experimental
-registry: {version: 2.2.0, sha256: 2d531e2a71aee5c9ed9e00c4ac9534dddb4c7d25b4703e3b2b505483087aa128}
+version: 1.0.0-prevalidation.8
+lineage: {code: ltqv, derived_from: []}
+registry: {version: 3.0.0, closure_sha256: 48d0ce47e8061018039d278017f1785571fac1867bcc9449dd711bda53d294ba}
 
 hypothesis: >
   Businesses that earn high and stable returns on capital, convert profits
@@ -250,6 +267,13 @@ sizing:
   formula: "min(notional_capital * target_vol_contribution / realised_vol_1y, notional_capital * max_position_pct)"
   revised_formula: "min(notional_capital * target_vol_contribution / realised_vol_1y, notional_capital * max_position_pct)"
 
+# Model-portfolio construction is part of the hypothesis (Doc 04 s3): pre-registered once, before the first
+# design evaluation, and never set from personal circumstances. Personal sizing lives in portfolio_policy.yaml.
+construction:
+  max_positions: OPEN
+  capacity_order: rank
+  residual_cash: uninvested
+
 proposed_execution_rule:
   scope: simulation_and_plan_only
   entry_ref: "close_raw(signal_date)"
@@ -300,9 +324,11 @@ review_triggers:
   - "earnings_yield_ttm <= 0"
   - "forensic_flag_count >= 1"
 
-corporate_action_policy: standard_equity_ca_policy_v2
+corporate_action_policy: standard_equity_ca_policy_v3
 ca_state_held: [entry_ref, entry_high, tranche_limit, target_qty, revised_target_qty, current_earmark_qty]
 signal_void_on: [governance_event, surveillance_entry, transformative_ca]
+void_parameters:
+  governance_event: {promoter_pledge_pct: 0.15}
 
 benchmark: NIFTY_500_TRI
 secondary_benchmark: NIFTY_200_QUALITY_30_TRI
@@ -323,15 +349,14 @@ retirement:
   threshold: 0.0
 ```
 
-<!-- generated from strategies/mom_v1.yaml sha256:92dd0e06fbb7d71c7911289ccb6667edb4d027a9c1e9930a3289ed16ad0e635e -->
+<!-- generated from strategies/mom_v1.yaml sha256:8539db7765b8e5b51ca2de9ae1b88a6e8f6f63413b87b6903e59a67be4f8cc84 -->
 ```yaml
-schema_version: 5
+schema_version: 6
 code: mom_v1
 strategy_class: momentum
-version: 1.0.0-prevalidation.7
-lineage: mom
-status: experimental
-registry: {version: 2.2.0, sha256: 2d531e2a71aee5c9ed9e00c4ac9534dddb4c7d25b4703e3b2b505483087aa128}
+version: 1.0.0-prevalidation.8
+lineage: {code: mom, derived_from: []}
+registry: {version: 3.0.0, closure_sha256: 2c87863e44a1ef89ce0e60c59d4ab3ba40b6f116adc3b41066683d22d605eaef}
 
 hypothesis: >
   Cross-sectional relative strength persists over 3 to 12 month horizons
@@ -380,11 +405,13 @@ params:
   band_fno:
     value: CALIBRATE
     calibration: {statistic: quantile, q: 0.25, feature: delivery_pct_20d_avg,
-                  population: {is_fno_eligible: true}, period: design_only}
+                  population: {is_fno_eligible: true}, period: design_only,
+                  sampling: pooled_entry_sessions}
   band_cash:
     value: CALIBRATE
     calibration: {statistic: quantile, q: 0.25, feature: delivery_pct_20d_avg,
-                  population: {is_fno_eligible: false}, period: design_only}
+                  population: {is_fno_eligible: false}, period: design_only,
+                  sampling: pooled_entry_sessions}
 
 composites: {}
 
@@ -410,13 +437,20 @@ lifecycle:
 sizing:
   method: stop_risk_budget
   params: {notional_capital: OPEN, risk_to_stop_pct: OPEN, max_position_pct: OPEN}
-  formula: "min(notional_capital * risk_to_stop_pct / (2.5 * atr_pct_20), notional_capital * max_position_pct)"
+  formula: "min(notional_capital * risk_to_stop_pct / (2.5 * atr_pct_at_signal), notional_capital * max_position_pct)"
+
+# Model-portfolio construction is part of the hypothesis (Doc 04 s3): pre-registered once, before the first
+# design evaluation, and never set from personal circumstances. Personal sizing lives in portfolio_policy.yaml.
+construction:
+  max_positions: OPEN
+  capacity_order: rank
+  residual_cash: uninvested
 
 proposed_execution_rule:
   scope: simulation_and_plan_only
   entry_ref: "close_raw(signal_date)"
   entry_high: "entry_ref * 1.03"
-  target_qty: "min(floor(target_value / entry_ref), min(floor(hard_cap_value / entry_high), floor(notional_capital * risk_to_stop_pct / (entry_high * 2.5 * atr_pct_20))))"
+  target_qty: "min(floor(target_value / entry_ref), min(floor(hard_cap_value / entry_high), floor(notional_capital * risk_to_stop_pct / (entry_high * 2.5 * atr_pct_at_signal))))"
   tranches:
     - n: 1
       weight: 1.0
@@ -430,13 +464,13 @@ proposed_execution_rule:
 
 stop:
   evaluation_order: test_then_update
-  initial: "entry_basis * (1 - 2.5 * atr_pct_20)"
+  initial: "entry_basis * (1 - 2.5 * atr_pct_at_signal)"
   update: "max(stop_prev, highest_close_since_entry * (1 - 2.5 * atr_pct_at_peak))"
 
 exit_rules:
   - {code: X1, cadence: daily,  expr: "close_raw(eval_date) < stop_in_force"}
   - {code: X2, cadence: daily,  expr: "persist(price_vs_dma50 < 1.0, 3, persist_unit.session)"}
-  - {code: X3, cadence: weekly, expr: "vol_adj_mom_12m < 0.30"}
+  - {code: X3, cadence: weekly, weekday: fri, expr: "vol_adj_mom_12m < 0.30"}
   - {code: X4, cadence: daily,  expr: "holding_days >= 180"}
   - {code: X5, cadence: daily,  expr: "surveillance_stage == surveillance_stage.asm_lt_2plus OR surveillance_stage == surveillance_stage.asm_st_2plus OR surveillance_stage == surveillance_stage.gsm_any"}
 
@@ -446,7 +480,7 @@ cooldown:
 
 review_triggers: []
 
-corporate_action_policy: standard_equity_ca_policy_v2
+corporate_action_policy: standard_equity_ca_policy_v3
 ca_state_held: [entry_ref, entry_high, entry_basis, highest_close_since_entry,
                 stop_prev, stop_in_force, target_qty, current_earmark_qty]
 signal_void_on: [band_close_event, surveillance_entry, transformative_ca]
@@ -468,4 +502,3 @@ retirement:
   window_years: 2
   threshold: 0.0
 ```
-

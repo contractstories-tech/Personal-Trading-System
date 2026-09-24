@@ -1,6 +1,6 @@
-# Validation Protocol — Document 04 r3
+# Validation Protocol — Document 04 r4
 
-*Release r5.4 · 24 September 2026 · governs how every backtest, shadow run and promotion is conducted*
+*Release r5.5 · 24 September 2026 · governs how every backtest, shadow run and promotion is conducted*
 
 ## 1. Purpose and what counts as evidence
 
@@ -8,7 +8,7 @@ A backtest is evidence only if it was run under this protocol, and a strategy is
 
 **A result counts as evidence only if all of these hold:**
 
-1. It was produced by an engine that passes every golden case (§2).
+1. It was produced by an engine that passes every reference, feature and card-level golden case (§2).
 2. Its run manifest is complete and immutable (Document 01 §13).
 3. It used only design-period data, or it is the single sealed holdout evaluation (§7).
 4. It is recorded in the append-only trial log, whatever its outcome (§8).
@@ -20,17 +20,54 @@ The golden cases are executable and live in the package:
 
 | File | Role |
 | --- | --- |
-| `reference_sim.py` | Plain reference implementations of every rule this document fixes |
-| `golden/golden_cases.yaml` | 75 synthetic cases, answers computed by hand before the reference ran |
-| `test_golden.py` | Runs the cases; also plants 28 known defects and requires every one to be caught |
+| `reference_sim.py`, `golden/golden_cases.yaml`, `test_golden.py` | Simulation, costs, tax, corporate actions, point-in-time reads, scoring and promotion statistics. Synthetic cases, answers computed by hand; planted defects must all be caught |
+| `reference_features.py`, `golden/feature_cases.yaml`, `test_features.py` | Every feature and forensic flag a card reads, at its presence thresholds and window lengths; planted definition defects; an automated check that every card-read feature has cases |
+| `reference_engine.py`, `golden/card_cases.yaml`, `test_card_golden.py` | The cards themselves: gates, exits, filters, confidence, ranking, sizing, tranches, the stop, construction and scale, evaluated from the YAML; planted **card edits** must each break a case |
+| `mutation_check.py`, `golden/mutation_allowlist.yaml` | Fixture adequacy: every comparison, operator and constant in the two reference modules is mutated; each survivor must be a reviewed equivalent mutant with a written reason |
 
-**Synthetic first.** Synthetic cases have answers known by construction, so they test the logic without depending on data quality. They cover: buy fills at and above the limit and at the upper band; exits at, after and without the lower band; the impact model; costs across dates; the tax view across three regimes, set-off, grandfathering and the holding-period boundary; the stop state machine including ties and post-peak calm; bonus, fractional-bonus, demerger and rights transforms; tranche arithmetic including exhaustion and a falling target; `persist`; winsorised z-scores including the minimum and zero-variance cases; ROCE with leases, cash-rich and negative equity; negative-over-negative cash conversion; tie-breaking; point-in-time reads, including the basis-filter trap; the look-ahead canary; and valuation blackouts.
+Counts are in the README, never in prose.
 
-**Teeth.** `test_golden.py` plants each defect found in review into the reference, one at a time: a single scalar cutoff for both data domains, a security target that sums claims, slots allocated by market cap, dividends spendable on the ex-date, quantities ignoring the hard cap, the exemption applied before loss set-off, sensitivity that demands a peak, basis substituted per date, a benign missing-band assumption, a stop not tested on the fill day, tie-updating peaks, current-ATR stops, post-join basis filters, cash in lieu at the cum price, tranches converted at the capped limit, fills at an upper-band open, a missing exemption, a missing set-off, unknown treated as false, nearest-rank winsorisation, sample standard deviation, negative-over-negative ratios, leases outside capital, cash-rich firms failing ROCE, stamp duty on sells, 12 months treated as long-term, no tie tolerance, and ignored lower-band locks. Every one must make a case fail. A mutant that survives is a gap in the fixtures, and must be closed with a new case before any backtest counts.
+**Synthetic first.** Synthetic cases have answers known by construction, so they test the logic without depending on data quality. They cover:
 
-**Conformance.** M5, M6 and M14 must expose equivalent functions and pass the same file unmodified. A production engine that disagrees with the reference on any case is wrong until proven otherwise, and the resolution is recorded in the issue log.
+- **Fills:** buy fills at, above and exactly at the limit and at the upper band; exits at, after and without the lower band, including a lock followed by a missing band file.
+- **Frictions:** the impact model, including zero ADV; costs across dates, including the pre-GST service tax.
+- **Tax view:** three regimes, set-off, grandfathering and its date boundary, the holding-period boundary and leap days, fiscal-year boundaries, the straddle year's exemption and regime pro-rating, and loss vintages and their lapse.
+- **The stop state machine:** ties, post-peak calm and a close exactly at the stop.
+- **Corporate-action transforms:** bonus, fractional bonus, demerger, rights with whole entitlements, and continuity across an ISIN change.
+- **Tranches:** arithmetic including exhaustion and a falling target clamped to the remainder.
+- **Scoring:** `persist`; winsorised z-scores including the minimum and zero-variance cases; tie-breaking and the tie tolerance.
+- **ROCE and cash conversion:** ROCE with leases, cash-rich firms, loss-making cash shells, near-zero and negative average capital employed, the universal cap and the 5% boundary; negative-over-negative and zero-profit cash conversion.
+- **Point-in-time reads:** the basis-filter trap, rows usable exactly at the cutoff, the look-ahead canary, restated old periods, and the basis decided as of the cutoff.
+- **Valuation blackouts.**
+- **Promotion statistics:** Newey–West t, the trial-scaled hurdle, holdout consistency, rolling-window share and drawdown.
+- **Specification constants held in function defaults.**
 
-**Real-data cases come next** (Stage 0 and 1). Each is chosen for a failure mode, not recognisability, and its expected values are computed by hand from the original filings and exchange files: a merger with a symbol change; a demerger with a discovery session and a later-listing stub; a split; a bonus with fractions; a rights issue with a listed entitlement and one from before 2020; a restated company; a company whose standalone and consolidated results were filed on different days; a price correction published after the fact; a trade-for-trade security; a surveillance entry; and a security that went suspended and then delisted. Each is added to the golden file with its source documents referenced by hash.
+**Teeth.** Each test file plants known defects into its reference, one at a time, and every one must make a case fail. A crash counts as a survival.
+
+- `test_golden.py` plants every defect found in review. Examples: a single scalar cutoff, a security target that sums claims, dividends spendable on the ex-date, the r5.4 ROCE rule, a timeless basis decision, fundamentals read as "the latest row", fractional rights entitlements, an ISIN change that resets history, a hurdle that ignores the trial count, a holdout judged on sign only, and a straddle exemption taken from the FY start.
+- `test_features.py` plants plausible misreadings of each feature's text.
+- `test_card_golden.py` edits the cards themselves. Examples: a 5% ROCE gate, a 4× ATR stop, `>=` turned into `>`, OR turned into AND, and a removed remainder clamp.
+
+A mutant that survives is a gap in the fixtures, and must be closed with a new case before any backtest counts. `mutation_check.py` then looks for gaps nobody planted.
+
+**Conformance.** M5, M6, M7 and M14 must expose equivalent functions and pass the same files unmodified. A production engine that disagrees with a reference on any case is wrong until proven otherwise, and the resolution is recorded in the issue log.
+
+**Real-data cases come next** (Stage 0 and 1). Each is chosen for a failure mode, not recognisability, and its expected values are computed by hand from the original filings and exchange files:
+
+- a merger with a symbol change;
+- a split with an ISIN change;
+- a demerger with a discovery session and a later-listing stub;
+- a bonus with fractions;
+- a rights issue with a listed entitlement, and one from before 2020;
+- a restated company;
+- a company whose standalone and consolidated results were filed on different days;
+- a price correction published after the fact;
+- a late-published bhavcopy;
+- a trade-for-trade security;
+- a surveillance entry;
+- a security that went suspended and then delisted.
+
+Each is added to the golden files with its source documents referenced by hash.
 
 ## 3. Execution model (M14)
 
@@ -60,11 +97,18 @@ The per-session haircut stands in for queue position when a locked stock reopens
 
 Buybacks are not tendered into.
 
-**Model portfolios.** Each strategy runs on its card's notional capital, sized by its card, with no cross-strategy netting. Cash earns nothing in v1, a conservative simplification.
+**Model portfolios.** Each strategy runs on its card's measurement capital (`notional_capital`, in INR), sized by its card, with no cross-strategy netting. Its **construction** is part of the hypothesis and is pre-registered in the card before the first design evaluation (Document 01 §4): the maximum number of positions, and the capacity order — rank order for a `rank_and_gate` card, earliest signal for a `gate_only` card. The rules are:
+
+- Existing positions are never displaced.
+- New claims fill free slots in capacity order, each sized at `min(target_value, spendable cash)`.
+- Residual cash stays uninvested and earns nothing in v1, a conservative simplification.
+- Size-dependent checks (impact, participation) run at the model size.
+
+`reference_engine.construct` fixes this (golden cases C25). Review triggers never trade in a model portfolio; each occurrence is counted and reported, with the number of positions held under an open review trigger.
 
 **Cash has two dates.** Dividends and corporate-action cash accrue to return on the ex-date, but become **spendable only on the payment date**. Crediting spendable cash on the ex-date would let the simulator buy with money it did not yet have.
 
-**Size versus fill.** Quantity is derived from the reference price, then capped so that a fill at the highest permitted price still cannot breach the hard position limit — and, for stop-risk sizing, cannot exceed the risk budget. A higher allowed fill reduces quantity rather than silently enlarging the position or the risk.
+**Size versus fill.** Quantity is derived from the reference price, then capped so that a fill at the highest permitted price still cannot breach the hard position limit — and, for stop-risk sizing, cannot exceed the risk budget. The initial stop uses the ATR known at the signal (`atr_pct_at_signal`), the same one the quantity was sized on, so the budget holds at any permitted fill. A higher allowed fill reduces quantity rather than silently enlarging the position or the risk. The engine also enforces the hard cap on its own, whatever the card's expression.
 
 ## 4. Cost model
 
@@ -105,7 +149,7 @@ Short-term losses set off against short- and long-term gains; long-term losses a
 
 **Multi-year losses.** Losses carry forward by vintage and by kind, and each vintage lapses after eight years. A loss from FY *y* is usable in FY *y*+1 to *y*+8. Brought-forward losses are applied oldest first: short-term losses against short-term and then long-term gains, long-term losses against long-term gains only. A short-term loss stays short-term when carried. The reference implements this across years; golden cases G28c–e fix the lapse, the last usable year and the carried short-term loss.
 
-**The straddle year.** FY 2024-25 contains sales under both regimes. Each sale is taxed at the rate in force on **its own date**; the FY exemption is the one in force at the financial year's end, applied once to the net long-term gain and shared pro-rata across regime buckets. Confirmation of this treatment remains a Stage 0 item.
+**The straddle year.** FY 2024-25 contains sales under both regimes. Each sale is taxed at the rate in force on **its own date**; the FY exemption is the one in force at the financial year's end, applied once to the net long-term gain and shared pro-rata across regime buckets (golden cases G28f–g). Confirmation of this treatment against a filed return or professional advice remains a Stage 0 item.
 
 **The tax view never gates.** Promotion is judged after costs (§12). The after-tax result is reported beside it as your deployment view. A long-term *strategy* exit inside 12 months is short-term for tax, and the view shows that plainly. The treatment of FY 2024-25, which straddles the July 2024 change, is flagged for confirmation at Stage 0.
 
@@ -119,6 +163,10 @@ Each card declares `warm_up_years`, `evaluable_years` and `holdout_years` (Docum
 
 **Holdout exposure is tracked per lineage, not per version.** `schemas/holdout_ledger.schema.json` is an append-only record, one per strategy lineage (`ltqv`, `mom`). Every design evaluation and every sealed evaluation appends the date range it touched. Once a range has been exposed to research for a lineage, it is permanently design-known **for every descendant card**. A card that fails its holdout and is then revised cannot reuse those years as if they were unseen: its descendant needs genuinely later data, which in practice means the shadow period. Without this, "one sealed evaluation per card version" would be defeated by renaming the version.
 
+**Renaming the lineage does not help either.** Each card declares `lineage.derived_from`. Its registration (Document 01 §10) must declare the lineages whose sealed results its author has seen. The new lineage's ledger starts with `inherited` entries copying every exposure of those lineages, each naming its `source_lineage`. The declaration is an attestation, recorded and hashed. It cannot prove what a person has not seen, but it makes a silent rename a recorded false statement rather than a loophole.
+
+**A registry edit is not a card change.** A card's identity is its file hash plus its registry closure (Document 01 §8). An edit elsewhere in the registry does not re-version the card and does not burn its holdout. An edit inside the closure changes what the card means, and is treated as a card change.
+
 **The holdout is sealed.** Any run whose manifest has `holdout_access: none` cannot read holdout dates; M5 refuses them. Exactly one run per card version may carry `holdout_access: sealed_evaluation`, and it is recorded in the lifecycle evidence. A second holdout run for the same card version is invalid. Changing a card after seeing its holdout result makes it a new version, which needs fresh holdout data — in practice, a shadow period.
 
 **Calibration** (for example momentum's delivery bands) runs once, on design data only, at the quantile the card pre-registers, and is recorded in the trial log with its inputs. The result is written into the card, making a new version before testing begins.
@@ -127,7 +175,7 @@ Each card declares `warm_up_years`, `evaluable_years` and `holdout_years` (Docum
 
 ## 8. Trial log
 
-`trial_log` is append-only. Every simulation run is recorded: parameters, card hash, manifest ID, headline results, and whether it was a stress variant, sensitivity point, calibration, design evaluation or the holdout evaluation. Failed and abandoned runs are recorded too. The count of design trials per card is reported with every promotion decision, so a result that is the best of many attempts is visible as such. Nothing in the log is deleted or edited.
+`trial_log` is append-only. Every simulation run is recorded: parameters, card hash, manifest ID, headline results, and whether it was a stress variant, sensitivity point, calibration, design evaluation or the holdout evaluation. Failed and abandoned runs are recorded too. The count of design trials per lineage is not only reported: it **sets the promotion hurdle** (§12), so a result that is the best of many attempts must clear a higher bar. Nothing in the log is deleted or edited.
 
 ## 9. Stress and sensitivity
 
@@ -195,14 +243,24 @@ Innocuous-looking choices here decide promotions, so each is fixed and has a gol
 | **Drawdown** | Peak-to-trough of the daily model-portfolio value series, after costs |
 | **Selection effect** | Brinson–Fachler selection term (§10), summed over the evaluable period |
 
-**Implementation status.** `reference_sim` implements alpha, Sharpe, the Newey–West standard error and turnover, fixed by golden cases G29a–d. **Drawdown and the Brinson–Fachler selection effect are not yet implemented, and nor is the rolling-window share as defined above.** Cash's treatment in attribution is also not yet defined: whether it is a segment, with what benchmark weight and return, and to what reconciliation tolerance. All of these must exist, each with hand-worked golden cases, before the first calibration or backtest run (Document 01 §17). Until then no promotion criterion that uses them can be evaluated.
+**Implementation status.** `reference_sim` implements alpha, Sharpe, the Newey–West standard error and t-statistic, turnover, the rolling-window share, drawdown and the promotion hurdle and decision, fixed by golden cases G29a–k and G32a–f. **The Brinson–Fachler selection effect is not yet implemented, and cash's treatment in attribution is not yet defined**: whether it is a segment, with what benchmark weight and return, and to what reconciliation tolerance. Both must exist, with hand-worked golden cases, before the first calibration or backtest run (Document 01 §17).
 
 ## 12. Acceptance by validation class
 
+**The statistical rule, for every class** (pre-registered; `reference_sim.promotion_decision`):
+
+- **Design period:** the Newey–West t-statistic (lag 6) of monthly excess return over the primary benchmark is at least the **hurdle**. The hurdle is the two-sided 5% Bonferroni value for the lineage's logged design trials: `Φ⁻¹(1 − 0.05 ÷ (2 × trials))`, which is 1.96 for one trial, 2.58 for five and 3.02 for twenty.
+- **Sealed holdout:** mean excess return is positive **and** consistent with the design estimate — not below the design mean by more than two holdout Newey–West standard errors.
+- **Reported alongside:** the minimum detectable annualised alpha at the design sample's precision (hurdle × SE × 12), so a pass or fail is read against what the data could have shown.
+
+Sign-only tests, as in r5.4, would pass about one in five strategies with no true alpha (audit B7). The class criteria below come on top of this rule.
+
 | Class | Required for experimental → shadow |
 | --- | --- |
-| `fundamental` (`ltqv_v1`) | All golden cases pass. Alpha after costs versus the primary benchmark is positive over the design period **and** in the sealed holdout. Positive in at least 60% of rolling 3-year windows. Positive Brinson selection. Maximum drawdown no worse than the benchmark's plus 5 percentage points. Annual turnover below 40%. Smooth sensitivity. Positions open at holdout end marked and reported separately |
-| `technical_eod` (`mom_v1`) | All golden cases pass. Alpha after costs versus the benchmark positive in design and holdout. Sharpe above the benchmark's. Survives 2× costs and 2× impact. Survives the lower-band model. Smooth sensitivity |
+| `fundamental` (`ltqv_v1`) | All golden cases pass. The statistical rule versus the primary benchmark (Nifty 500 TRI). Alpha after costs versus the **secondary benchmark (Nifty 200 Quality 30 TRI)** positive over the design period — the hypothesis claims more than a quality tilt, and the card's retirement metric uses this benchmark. Positive in at least 60% of rolling 3-year windows. Positive Brinson selection. Maximum drawdown no worse than the benchmark's plus 5 percentage points. Annual turnover below 40%. Smooth sensitivity. Positions open at holdout end marked and reported separately |
+| `technical_eod` (`mom_v1`) | All golden cases pass. The statistical rule versus the benchmark (Nifty 200 Momentum 30 TRI). Sharpe above the benchmark's. Survives 2× costs and 2× impact. Survives the lower-band model. Smooth sensitivity |
+
+**Benchmark history.** The Quality 30 and Momentum 30 TRIs are recent launches (around 2019–2020), and their earlier history is back-calculated by the index provider. Every report states the launch date, and results are shown separately before and after it.
 | `event` | Reserved: requires verified-fact event inputs (Document 05) and an event-time evaluation design before any card is accepted |
 | `intraday` | Reserved: requires the intraday data contract (Document 02 §16), quote-based fills, intraday statutory charges (STT 0.025% on sells for intraday equity, among others, confirmed at drafting), and session-state simulation |
 
@@ -227,10 +285,10 @@ Once three months of live runs exist, the distribution of `system_available_at �
 
 Every promotion candidate produces one report, hashed and referenced by its lifecycle transition. It contains:
 
-- the card version and hash
+- the card version, hash, registry closure hash and lifecycle transition
 - all run manifest IDs
 - golden-case and linter results
-- the trial count
+- the trial count, the hurdle it sets, and the minimum detectable alpha
 - design and holdout results after costs, with the after-tax view beside them
 - rolling-window results, stress table, sensitivity grids, attribution and decomposition
 - the expected signal frequency

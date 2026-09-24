@@ -35,7 +35,8 @@ TESTS, NOT_RUN = [], []
 CODEC = "jsonl"          # set per pass by the runner below
 
 
-def test(fn):
+def case(fn):
+    """Registers an M2 case (named 'case', not 'test', so pytest does not collect the decorator itself)."""
     TESTS.append(fn)
     return fn
 
@@ -81,7 +82,7 @@ def _g(rows):
     return [dict(r, usable_from=ist(r["usable_from"])) for r in rows]
 
 
-@test
+@case
 def golden_pit_cases_pass_on_production_primitive():
     G = yaml.safe_load(open(os.path.join(KIT, "golden", "golden_cases.yaml")))
     rows = _g(G["pit"]["rows"])
@@ -110,7 +111,7 @@ def golden_pit_cases_pass_on_production_primitive():
     pit.read_checked(rows[cb["row_index"]], ist(cb["cutoff"]))          # G20b: no raise at equality
 
 
-@test
+@case
 def naive_timestamp_refused_by_pit_layer():
     """H8: a missing offset must never be silently read as IST (or anything else)."""
     raises(ValueError, parse_ts, "2026-09-18T20:00")
@@ -119,7 +120,7 @@ def naive_timestamp_refused_by_pit_layer():
     raises(ValueError, ist, "2026-09-18T20:00+05:30")
 
 
-@test
+@case
 def cutoffs_come_from_registry_in_ist():
     c = run_cutoffs(D3)
     assert c["exchange_eod"] == dt.datetime(2026, 9, 18, 23, 0, tzinfo=IST)
@@ -128,7 +129,7 @@ def cutoffs_come_from_registry_in_ist():
 
 
 # ------------------------------------------------------------------ parsers
-@test
+@case
 def legacy_and_udiff_parse_to_identical_rows():
     with Env() as e:
         f1, d1, r1 = parsers.parse_bhavcopy(parsers.read_bytes(F.legacy(e.f("l.csv"), D2)))
@@ -138,7 +139,7 @@ def legacy_and_udiff_parse_to_identical_rows():
         assert r1[0]["traded_value"] == decimal.Decimal("1185000.0000")  # from the file, never close x volume
 
 
-@test
+@case
 def zipped_file_is_read():
     import zipfile
     with Env() as e:
@@ -148,7 +149,7 @@ def zipped_file_is_read():
         assert parsers.parse_bhavcopy(parsers.read_bytes(e.f("l.zip")))[1] == D1
 
 
-@test
+@case
 def unknown_header_fails_loudly():
     with Env() as e:
         p = e.f("x.csv")
@@ -158,7 +159,7 @@ def unknown_header_fails_loudly():
         raises(parsers.FormatError, parsers.parse_mto, parsers.read_bytes(p))
 
 
-@test
+@case
 def excess_precision_and_non_numbers_rejected():
     with Env() as e:
         rows = F.bars(D1)
@@ -169,7 +170,7 @@ def excess_precision_and_non_numbers_rejected():
         raises(parsers.FormatError, parsers.parse_bhavcopy, parsers.read_bytes(F.legacy(e.f("b.csv"), D1, rows)))
 
 
-@test
+@case
 def mixed_dates_in_one_file_rejected():
     with Env() as e:
         p = F.legacy(e.f("a.csv"), D1)
@@ -179,7 +180,7 @@ def mixed_dates_in_one_file_rejected():
 
 
 # ------------------------------------------------------------------ availability
-@test
+@case
 def backfill_first_version_is_inferred_at_2230_and_used_same_day():
     with Env() as e:
         load_days(e, [D1])
@@ -190,7 +191,7 @@ def backfill_first_version_is_inferred_at_2230_and_used_same_day():
         assert {x["isin"] for x in got} == {A, B, C}
 
 
-@test
+@case
 def live_row_processed_after_cutoff_is_not_used_that_day():
     with Env() as e:
         p = F.legacy(e.f("a.csv"), D1)
@@ -201,7 +202,7 @@ def live_row_processed_after_cutoff_is_not_used_that_day():
         assert len(resolve.history_known_as_of(e.wh, D2)) == 3
 
 
-@test
+@case
 def usable_from_is_never_before_publication():
     with Env() as e:
         load_days(e, [D1])
@@ -209,7 +210,7 @@ def usable_from_is_never_before_publication():
             assert r["usable_from"] >= r["source_published_at"], r["isin"]
 
 
-@test
+@case
 def policy_refuses_inferred_time_at_or_after_cutoff():
     with Env() as e:
         for sid in ("nse_cm_bhavcopy", "nse_cm_delivery"):
@@ -221,7 +222,7 @@ def policy_refuses_inferred_time_at_or_after_cutoff():
         source_policy.load()  # the shipped policy loads
 
 
-@test
+@case
 def availability_is_source_specific():
     """B9: the delivery file's inferred time is its own, not the bhavcopy's."""
     with Env() as e:
@@ -240,7 +241,7 @@ def availability_is_source_specific():
 
 
 # ------------------------------------------------------------------ versioning and corrections
-@test
+@case
 def same_file_twice_is_a_noop():
     with Env() as e:
         p = F.legacy(e.f("a.csv"), D1)
@@ -250,7 +251,7 @@ def same_file_twice_is_a_noop():
         assert len(e.wh.read("price_observation")) == n
 
 
-@test
+@case
 def same_content_in_other_format_writes_no_version():
     with Env() as e:
         ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("a.csv"), D1), recv(D1))
@@ -260,7 +261,7 @@ def same_content_in_other_format_writes_no_version():
         assert len(e.wh.read("price_observation")) == n
 
 
-@test
+@case
 def correction_is_a_new_version_resolved_as_of():
     """Stage 0 acceptance: 'a price correction is resolved as-of correctly' (synthetic)."""
     with Env() as e:
@@ -278,7 +279,7 @@ def correction_is_a_new_version_resolved_as_of():
         assert close_on(D3) == decimal.Decimal("120")
 
 
-@test
+@case
 def reissue_missing_a_security_logs_conflict_and_keeps_prior():
     with Env() as e:
         load_days(e, [D1], deliver=False)
@@ -297,7 +298,7 @@ def _unchanged(e, fn):
     assert e.wh.snapshot()["snapshot_sha256"] == before, "a rejected file changed the warehouse"
 
 
-@test
+@case
 def ohlc_violation_rejects_whole_file():
     with Env() as e:
         load_days(e, [D1], deliver=False)
@@ -307,7 +308,7 @@ def ohlc_violation_rejects_whole_file():
                                      F.legacy(e.f("x.csv"), D2, rows), recv(D2)))
 
 
-@test
+@case
 def duplicate_isin_and_canary_prefix_rejected():
     with Env() as e:
         rows = F.bars(D1)
@@ -319,7 +320,7 @@ def duplicate_isin_and_canary_prefix_rejected():
                                      F.legacy(e.f("c.csv"), D1, rows), recv(D1)))
 
 
-@test
+@case
 def row_count_collapse_fires_kill_switch_small_drop_warns():
     many = [dict(r, isin=f"INE{n:03d}X01010", sym=f"S{n}") for n in range(20) for r in F.bars(D1)[:1]]
     with Env() as e:
@@ -333,7 +334,7 @@ def row_count_collapse_fires_kill_switch_small_drop_warns():
         assert res["warnings"]
 
 
-@test
+@case
 def delivery_needs_bhavcopy_and_valid_quantities():
     with Env() as e:
         raises(ingest.QualityError, ingest.ingest_delivery, e.wh, F.mto(e.f("m.DAT"), D1), recv(D1))
@@ -346,7 +347,7 @@ def delivery_needs_bhavcopy_and_valid_quantities():
                                      F.mto(e.f("m3.DAT"), D1, rows=rows), recv(D1)))
 
 
-@test
+@case
 def delivery_volume_mismatch_is_logged_not_overwritten():
     with Env() as e:
         ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("b.csv"), D1), recv(D1))
@@ -357,7 +358,7 @@ def delivery_volume_mismatch_is_logged_not_overwritten():
         assert [x["volume"] for x in resolve.history_known_as_of(e.wh, D1) if x["isin"] == B] == [20000]
 
 
-@test
+@case
 def delivery_join_and_missing_states():
     with Env() as e:
         load_days(e, [D1])
@@ -417,7 +418,7 @@ PLANTED = [
 ]
 
 
-@test
+@case
 def canary_catches_every_planted_read_defect():
     with Env() as e:
         load_days(e, [D1, D2])
@@ -433,7 +434,7 @@ def canary_catches_every_planted_read_defect():
         print(f"      {len(PLANTED)}/{len(PLANTED)} planted read defects caught")
 
 
-@test
+@case
 def canary_catches_real_row_read_early():
     """The guard, not just the sentinels: a real correction usable later must not reach an earlier run."""
     with Env() as e:
@@ -455,7 +456,7 @@ def _state(wh):
 CRASH_POINTS = ["before_record", "after_record", "mid_apply", "before_marker"]
 
 
-@test
+@case
 def crash_at_every_batch_boundary_is_all_or_nothing():
     """B2: one file is one batch. At every crash point a reader sees the old state or is refused;
     recovery then yields exactly the state of an uninterrupted ingestion, and the retry is clean."""
@@ -485,7 +486,7 @@ def crash_at_every_batch_boundary_is_all_or_nothing():
             assert e.wh.orphans() == [], point
 
 
-@test
+@case
 def crash_during_recovery_then_recovery_completes():
     with Env() as e:
         load_days(e, [D1], deliver=False)
@@ -501,7 +502,7 @@ def crash_during_recovery_then_recovery_completes():
         assert got == [decimal.Decimal("125")]
 
 
-@test
+@case
 def uncommitted_part_listed_in_a_manifest_is_refused():
     with Env() as e:
         load_days(e, [D1], deliver=False)
@@ -512,13 +513,13 @@ def uncommitted_part_listed_in_a_manifest_is_refused():
         raises(store.IntegrityError, e.wh.read, "price_observation")
 
 
-@test
+@case
 def writes_outside_a_writer_are_refused():
     with Env() as e:
         raises(store.StoreError, e.wh.batch)
 
 
-@test
+@case
 def tampered_part_is_refused():
     with Env() as e:
         load_days(e, [D1], deliver=False)
@@ -529,7 +530,7 @@ def tampered_part_is_refused():
         raises(store.StoreError, e.wh.read, "price_observation")
 
 
-@test
+@case
 def snapshot_isolates_reads_from_later_writes():
     with Env() as e:
         load_days(e, [D1, D2], deliver=False)
@@ -541,14 +542,14 @@ def snapshot_isolates_reads_from_later_writes():
         assert [x["close"] for x in old if x["isin"] == A and x["trade_date"] == D1] == [decimal.Decimal("119")]
 
 
-@test
+@case
 def concurrent_writer_refused():
     with Env() as e:
         open(os.path.join(e.wh.root, ".writer.lock"), "w").close()
         raises(store.StoreError, ingest.ingest_bhavcopy, e.wh, F.legacy(e.f("a.csv"), D1), recv(D1))
 
 
-@test
+@case
 def two_ingestions_racing_cannot_both_allocate_a_version():
     """B3: the lock spans read-latest -> allocate -> commit. While one correction is between its read and
     its commit, a second is refused rather than allocating the same version number."""
@@ -586,7 +587,7 @@ def two_ingestions_racing_cannot_both_allocate_a_version():
         assert [x["close"] for x in resolve.history_known_as_of(e.wh, D3) if x["isin"] == A] == [decimal.Decimal("140")]
 
 
-@test
+@case
 def duplicate_version_identity_is_an_integrity_failure():
     """B3 belt and braces: if duplicates ever exist (the reviewer's stale-read scenario), reads fail hard
     instead of silently picking one."""
@@ -602,7 +603,7 @@ def duplicate_version_identity_is_an_integrity_failure():
 
 
 # ------------------------------------------------------------------ the two read contracts
-@test
+@case
 def history_known_as_of_and_panel_differ_exactly_on_later_corrections():
     """B8: a correction to D1 arrives at 10:00 on D2. The decision at D1 must see the original; the decision
     at D3 may see the correction; the panel shows each bar as first known."""
@@ -622,7 +623,7 @@ def history_known_as_of_and_panel_differ_exactly_on_later_corrections():
 
 
 # ------------------------------------------------------------------ r5.5 additions (audit B3, B4, C5, C6)
-@test
+@case
 def panel_keeps_a_late_first_publication_and_masks_it_per_decision():
     """B3a: D2's file is first published at 23:30, after D2's 23:00 cutoff. r5.4's panel dropped D2 for ever;
     the decision on D2 must not see it, and every later decision must."""
@@ -637,7 +638,7 @@ def panel_keeps_a_late_first_publication_and_masks_it_per_decision():
         assert dates(D3) == {D1, D2, D3} == {x["trade_date"] for x in resolve.history_known_as_of(e.wh, D3)}
 
 
-@test
+@case
 def panel_masks_delivery_that_arrived_after_the_decision():
     with Env() as e:
         ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("b1.csv"), D1), at_ist(D1, "22:00"), mode="live", now=at_ist(D1, "22:01"))
@@ -649,7 +650,7 @@ def panel_masks_delivery_that_arrived_after_the_decision():
         assert at(D2)["delivery_state"] == "known"
 
 
-@test
+@case
 def backfill_inference_refused_for_a_same_day_file_and_after_live_capture_start():
     """B3b: a file received on its own trade date is a live file; r5.4 back-dated it to 22:30."""
     with Env() as e:
@@ -665,7 +666,7 @@ def backfill_inference_refused_for_a_same_day_file_and_after_live_capture_start(
                                      F.legacy(e.f("b2.csv"), D2), at_ist(D3, "12:00"), policy=pol))
 
 
-@test
+@case
 def one_bad_row_is_quarantined_not_the_whole_day():
     """C5: 1 defective row in 20 (5%) is quarantined and the other 19 are written; beyond the limit, nothing is."""
     many = [dict(r, isin=f"INE{n:03d}X01010", sym=f"S{n}") for n in range(20) for r in F.bars(D1)[:1]]
@@ -684,7 +685,7 @@ def one_bad_row_is_quarantined_not_the_whole_day():
                                      F.legacy(e.f("b.csv"), D2, worse), recv(D2)))
 
 
-@test
+@case
 def quarantined_delivery_is_not_reported_as_absent():
     many = [dict(r, isin=f"INE{n:03d}X01010", sym=f"S{n}") for n in range(20) for r in F.bars(D1)[:1]]
     with Env() as e:
@@ -697,7 +698,7 @@ def quarantined_delivery_is_not_reported_as_absent():
         assert got[many[1]["isin"]]["delivery_state"] == "known"
 
 
-@test
+@case
 def store_refuses_unknown_columns_floats_for_decimals_and_bools_for_ints():
     with Env() as e:
         base = {"file_sha256": "x", "source_id": "s", "trade_date": D1, "received_at": at_ist(D1, "22:00"),
@@ -709,7 +710,7 @@ def store_refuses_unknown_columns_floats_for_decimals_and_bools_for_ints():
         raises(store.StoreError, e.wh.append, "price_observation", "2026-09-16", [row])
 
 
-@test
+@case
 def duplicate_file_check_reads_only_its_own_date():
     """C6: r5.4 re-read the whole ingestion log for every file."""
     with Env() as e:
@@ -722,7 +723,7 @@ def duplicate_file_check_reads_only_its_own_date():
         assert seen == [("ingestion_log", [D2.isoformat()])], seen
 
 
-@test
+@case
 def naive_timestamps_refused_by_store():
     with Env() as e:
         row = {k: None for k in store.TABLES["ingestion_log"]}
@@ -730,7 +731,7 @@ def naive_timestamps_refused_by_store():
         raises(store.StoreError, e.wh.append, "ingestion_log", "2026-09-16", [row])
 
 
-@test
+@case
 def parquet_round_trip():
     try:
         import pyarrow  # noqa: F401
@@ -744,7 +745,7 @@ def parquet_round_trip():
         assert all(x["usable_from"].tzinfo is not None for x in got)
 
 
-@test
+@case
 def parquet_codec_never_falls_back_silently():
     try:
         import pyarrow  # noqa: F401
@@ -753,7 +754,8 @@ def parquet_codec_never_falls_back_silently():
         raises(store.StoreError, store.Warehouse, tempfile.mkdtemp(), "parquet")
 
 
-if __name__ == "__main__":
+def run_all(require_parquet=False):
+    global CODEC
     try:
         import pyarrow  # noqa: F401
         codecs = ["jsonl", "parquet"]
@@ -772,9 +774,20 @@ if __name__ == "__main__":
                 fails += 1
                 print(f"FAIL  {t.__name__} [{CODEC}]")
                 traceback.print_exc()
+    CODEC = "jsonl"
     print(f"\n{runs - fails}/{runs} passed ({len(TESTS)} cases x {len(codecs)} codec(s): {', '.join(codecs)})")
     if "parquet" not in codecs:
         print("NOT RUN: every case on the parquet codec (pyarrow not installed)")
-        if "--require-parquet" in sys.argv:
+        if require_parquet:
             fails += 1
-    sys.exit(1 if fails else 0)
+    return fails
+
+
+def test_m2_suite():
+    """pytest entry point: every M2 case on every available codec (r5.4's decorator was collected as a test and
+    no M2 case ran under pytest)."""
+    assert run_all() == 0
+
+
+if __name__ == "__main__":
+    sys.exit(1 if run_all("--require-parquet" in sys.argv) else 0)

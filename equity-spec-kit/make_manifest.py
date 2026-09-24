@@ -12,11 +12,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SKIP = {"MANIFEST.json", "__pycache__", ".pytest_cache"}
 # The one place the release is set. --verify checks MANIFEST.json and README.md agree with it
 # (r5.2 shipped labelled "r5.1" because this string was hardcoded and never verified).
-RELEASE = "r5.4"
+RELEASE = "r5.5"
 TEST_COMMAND = ("python3 test_speclint.py && python3 speclint.py && "
-                "python3 render_cards.py --check docs/Strategy-Pack-Doc-03-r6.md && python3 test_golden.py && "
+                "python3 render_cards.py --check docs/Strategy-Pack-Doc-03-r7.md && python3 test_golden.py && "
+                "python3 test_features.py && python3 test_card_golden.py && "
                 "python3 tests/test_m2.py && python3 tests/test_manifest.py && "
-                "python3 tests/test_release.py")
+                "python3 tests/test_release.py && python3 mutation_check.py")
 
 
 class StrayFileError(SystemExit):

@@ -2,7 +2,7 @@
 
 *Living handover document. Updated by Claude at the end of every working session. If this file and anything else disagree about where the project stands, this file wins.*
 
-**Last updated:** 24 September 2026 · **Current release:** r5.4 · **Current phase:** Stage 0 — M2 hardened (r5.4); S1b waits for real NSE sample files
+**Last updated:** 24 September 2026 · **Current release:** r5.5 · **Current phase:** Stage 0 — the audit of r5.4 resolved in r5.5; S1b waits for real NSE sample files
 
 ---
 
@@ -57,82 +57,93 @@ The project went through a deliberate sequence. Each step exists because the one
    - **Documents:** they agree with each other, checked automatically.
    - **Found while fixing, three more defects:** the thread re-entrancy hole in the new lock; a carried short-term loss relabelled as long-term; and a stray `docs/.git` bound into the first build.
 
+11. **Independent audit of r5.4 (24 Sep).** The audit reproduced every finding by execution. Its central finding was that nothing executed a card: a card with a 5% ROCE gate and a 4× ATR stop passed every check. Other findings:
+   - undefined evaluation semantics;
+   - undefined model-portfolio capacity, with personal values leaking into strategy measurement;
+   - whole-registry pinning;
+   - ISIN changes;
+   - linter bypasses;
+   - two point-in-time holes in the read path;
+   - a Parquet-only store defect;
+   - the fundamentals assembly;
+   - ROCE edge cases;
+   - a sign-only promotion rule;
+   - prose-only features.
+
+   Report and reproduction scripts: `audit/`.
+12. **r5.5 — every audit finding resolved in the package, each with a test that fails against r5.4.**
+   - **A reference card engine** runs each card's own expressions against hand-computed card-level cases. Planted card edits, including the audit's demonstration, are each caught.
+   - **Normative, versioned evaluation semantics** live in the registry.
+   - **Each card's `construction`** is part of its hypothesis; the allocator converts claims to weights of your capital.
+   - **Cards pin only the registry entries they use.** Status lives in lifecycle records outside the card, which is your planned B7, done now together with H9 and S0.10.
+   - **A reference implementation of every card-read feature**, with golden cases.
+   - **A trial-scaled promotion hurdle.**
+   - **A codec-independent store**, a lossless point-in-time panel, a backfill guard and row quarantine.
+   - **A mutation check** on fixture adequacy.
+
 Full history, with the disposition of every finding, is in the Issue Log.
 
 ## 3. Current state
 
-**Specification:** r5.4. The four reviews of r5.3 are dispositioned in Issue Log §10. Everything not yet fixed is scheduled to the phase where it first matters: **Document 01 §17** is the phase matrix.
+**Specification:** r5.5. The audit of r5.4 is dispositioned in Issue Log §12. The single Stage 0 registry re-pin is done. Everything not yet fixed is scheduled to the phase where it first matters: **Document 01 §17** is the phase matrix.
 
-**Product code:** Stage 0 slice S1, M2 price ingestion, in `eos/`, hardened in r5.4.
+**Product code:** Stage 0 slice S1, M2 price ingestion, in `eos/`. It was hardened in r5.4, then made codec-independent in r5.5, with row quarantine, a backfill guard and a lossless panel. Its full suite passes on Parquet (`pyarrow` 25.0.1, tested on Python 3.11).
+
+**Executable references:** `reference_sim.py` (simulation, tax, corporate actions, promotion statistics), `reference_features.py` (every feature a card reads) and `reference_engine.py` (what a card means). The production M5–M7 and M14 must reproduce all three.
 
 **What S1 has not yet touched:**
 
-- **No real exchange file has been parsed.** The parsers follow the documented layouts and fail loudly on any header they don't recognise.
-- **The Parquet codec has not run.** The chat environment has no `pyarrow`.
+- **No real exchange file has been parsed.** The parsers follow the documented layouts. They fail loudly on any header they don't recognise, and quarantine a defective row.
+- **Parquet has not yet run on the warehouse machine.**
 - **`band_close_state` is deliberately not built** until a real band file settles its semantics.
-- **Reissue and deletion semantics (B10)** await real files.
+- **Reissue and deletion semantics (B10)**, and how a genuine no-trade row is stored, await real files.
 
-**Package health at r5.4:** all eight commands pass from a clean unzip.
+**Package health at r5.5:** every command in the README's execution contract passes from a clean unzip.
 
-- 92 linter regression cases, plus 1,860 malformed cards with zero crashes
-- Both strategy cards compile
-- 81 golden cases, with 32 of 32 planted defects caught
-- Document 03 matches the YAML
-- 38 M2 cases, covering:
-  - a crash at every batch boundary, and during recovery
-  - a real two-writer race
-  - both read contracts
-  - 8 of 8 planted read-path defects caught by the canary
-  - the Parquet round-trip, which reports SKIP here
-- 4 manifest regression cases
-- Release consistency across all documents
-- Manifest verifies its files, its digest and its release label, and refuses hidden files
+- `test_speclint.py`: 115 linter cases, and 2,004 malformed cards with zero crashes.
+- `speclint.py`: both cards compile, as `experimental` per their lifecycle records.
+- `test_golden.py`: 143 reference golden cases; 42 of 42 planted defects caught.
+- `test_features.py`: 152 feature golden cases; 14 of 14 planted defects caught; every card-read feature covered.
+- `test_card_golden.py`: 52 card-level cases; 12 of 12 planted card edits caught.
+- `tests/test_m2.py`: 45 M2 cases on both codecs.
+- `mutation_check.py`: 588 mutation sites, 87% killed, every survivor reviewed as equivalent.
+- `tests/test_manifest.py` and `tests/test_release.py`: manifest and release consistency, now including every document's release line and every section reference.
 
 ## 4. The controlling package
 
 The files bound by `MANIFEST.json` in the latest `equity-spec-kit-rX.Y.zip` are controlling. Everything else is history, including older revisions and any editable copy.
 
-**Current package: `equity-spec-kit-r5.4.zip`**, package digest `67bf137fef310dd1…` (44 files).
+**Current package: `equity-spec-kit-r5.5.zip`** (digest in its `MANIFEST.json`). In the working repository, `equity-spec-kit/` is the same package, unzipped.
 
-**Upload the zip itself to the project**, and remove the older loose files and zips. Until the zip is in the project, each session rebuilds the layout from `MANIFEST.json` and checks every file's hash.
+**Upload the zip itself to the project**, and remove the older loose files and zips.
 
 The `.docx` copies of the documents are not updated per release; the `.md` files in the zip control.
 
-At r5.4:
+At r5.5:
 
 | Artefact | Revision |
 | --- | --- |
-| Overview | v5.4 |
-| Document 01 — Core Platform Architecture | r7 (phase matrix in §17) |
-| Document 02 — Data Contract & Canonical Schema | r4 |
-| Document 03 — Strategy Pack (card sections generated from YAML) | r6 |
-| Document 04 — Validation Protocol | r3 |
-| Issue Log & Traceability | r5.4 |
-| Stage 0 Plan | r5.4 |
-| `policies/source_policy.yaml` | 1.1.0 (per-source availability) |
-| `eos/` product code | Stage 0 slice S1, hardened |
-| `registry.yaml` | 2.2.0 |
-| `strategies/ltqv_v1.yaml`, `strategies/mom_v1.yaml` | 1.0.0-prevalidation.7 |
+| Overview | v5.5 |
+| Document 01 — Core Platform Architecture | r8 (evaluation semantics §7; phase matrix §17) |
+| Document 02 — Data Contract & Canonical Schema | r5 |
+| Document 03 — Strategy Pack (card sections generated from YAML) | r7 |
+| Document 04 — Validation Protocol | r4 |
+| Issue Log & Traceability | r5.5 |
+| Stage 0 Plan | r5.5 |
+| `policies/source_policy.yaml` | 1.2.0 (backfill guard, quarantine limit) |
+| `registry.yaml` | 3.0.0 (every entry versioned) |
+| `strategies/ltqv_v1.yaml`, `strategies/mom_v1.yaml` | 1.0.0-prevalidation.8, schema v6, registered `experimental` |
+| `eos/` product code | Stage 0 slice S1 |
 
 **Authority order:**
 
-1. The YAML cards are the only executable source of a strategy.
-2. `registry.yaml` owns every definition.
-3. Document 02 governs data; Document 01 architecture; Document 04 validation.
-4. Document 03 explains and is generated. Where prose and YAML disagree, YAML wins.
+1. The YAML cards are the only executable source of a strategy; their meaning is fixed by `reference_engine.py` and the card-level goldens.
+2. `registry.yaml` owns every definition and the evaluation semantics.
+3. Lifecycle records own every status.
+4. Document 02 governs data; Document 01 architecture; Document 04 validation.
+5. Document 03 explains and is generated. Where prose and YAML disagree, YAML wins.
 
-**Verify before trusting.** Every command must exit 0:
-
-```bash
-python3 make_manifest.py --verify
-python3 test_speclint.py
-python3 speclint.py
-python3 test_golden.py
-python3 render_cards.py --check docs/Strategy-Pack-Doc-03-r6.md
-python3 tests/test_m2.py
-python3 tests/test_manifest.py
-python3 tests/test_release.py
-```
+**Verify before trusting.** Every command in the README's execution contract must exit 0.
 
 On the machine that holds the warehouse, `python3 tests/test_m2.py --require-parquet` must also pass.
 
@@ -155,58 +166,67 @@ On the machine that holds the warehouse, `python3 tests/test_m2.py --require-par
 | Intraday is architecturally reserved, built later | Needs its own data contract, fills and validation class |
 | Backfilled exchange files: a row's **first** version is inferred available at its source's own time — currently 22:30 IST for both bhavcopy and delivery, marked `unverified`. Later versions are available only when actually received *(default adopted 23 Sep; made per-source 24 Sep)* | Archives carry no publication time. The time must fall before the 23:00 cutoff, and a correction must never be back-dated |
 | Delivery is stored as its own versioned table, joined in the resolved price view | Separate source, arrival time, corrections and coverage (Issue S0.3) |
-| **Registry and card-schema re-pins** are batched into one at Stage 0 close (H9, B7, S0.10). Document text known to be wrong is corrected when found, as Doc 02 r4 was *(adopted 23 Sep; refined 24 Sep)* | Avoids re-pinning cards every slice, without leaving a governing document wrong |
+| **Cards pin their registry closure**, not the whole file. A registry edit re-pins only the cards whose entries it touches *(r5.5; replaces the batched re-pin, which was done in r5.5)* | A registry edit must not re-version, and so burn the holdout of, an unrelated strategy |
 | Each Document 07-class control is due at the phase where its absence first contaminates something (Document 01 §17), not all "before shadow" | Review 1 §6: several controls are needed much earlier |
 | Two read contracts: `history_known_as_of(E)` for one decision; `point_in_time_panel` for a decision sequence | Review 1 B8 |
 | Hidden files are never bound into the package | Issue R5.12 |
 | No data-vendor spend until the XBRL prototype and the coverage report show the gaps in the free archives | The free exchange archives are already the primary source for everything exchange-originated |
 | Thresholds are compared in exact arithmetic, never floating point | Issue S0.2 |
 | The append-only trial log and lineage holdout enforcement are built **before the first calibration or backtest run** *(written into Document 01 §17 at r5.4 after Harsh's go-ahead; reversible if he objects)* | Exposure cannot be un-seen, so a log built later cannot record the trials that ran before it (B4) |
-| Lifecycle status leaves the immutable card; M17 is its only authority *(accepted; implemented at the Stage 0 re-pin)* | A status-only change currently alters the card's hash (B7) |
+| Lifecycle status lives only in lifecycle records; the card carries none *(implemented r5.5)* | A status change must not alter the card's hash (B7) |
+| **A card's sizing and construction are hypothesis parameters**, pre-registered before the first design evaluation; your values live only in `portfolio_policy.yaml` *(r5.5, audit A3)* | Personal settings must never change a strategy's measured results |
+| **Exits fire when a thesis input turns out-of-domain in the failing direction**, using Kleene logic otherwise *(r5.5, audit A2; per-exit `on_out_of_domain: review` available)* | A collapsing holding must be sold, not held behind a review flag |
+| **Promotion needs a Newey–West t above a hurdle that rises with logged trials**, and a holdout consistent with design *(r5.5, audit B7)* | Sign-only tests passed about 1 in 5 zero-alpha strategies |
+| **Gate, exit, filter and flag inputs are quantised to 9 dp, then compared in Decimal** *(r5.5, audit C2)* | Floating-point summation order must not flip a decision |
 
 ## 6. What is open
 
 **Harsh's values** (nothing proceeds to shadow use until set):
 
 - Every `OPEN` in `portfolio_policy.yaml`: total capital, caps per stock / sector / promoter group, maximum positions, minimum position, drawdown limit and response, cash floor, trim tolerance.
-- Each card's sizing values: notional capital, target volatility contribution or risk-to-stop, maximum position.
-- Broker profile and actual charges — reconciled against one real contract note.
+- Broker profile and actual charges — reconciled against one real contract note (including whether STT rounds to the rupee).
+
+**Strategy design parameters** (set once, before each card's first design evaluation; not personal values):
+
+- Each card's measurement capital, target volatility contribution or risk to the stop, maximum position, and `construction.max_positions`.
 
 **Harsh's actions for Stage 0:**
 
 - Download batch 1 of NSE sample files (Stage 0 Plan §5; about 25–30 files) and upload them unaltered. Never re-save them in Excel.
-- Set up the warehouse machine: Python 3.12, `PyYAML==6.0.3` and `pyarrow`. Report the `pyarrow` version so it can be pinned.
-- Upload `equity-spec-kit-r5.4.zip` itself to the project.
-- Object, if you wish, to the two defaults adopted on 23 Sep (§5).
-- Confirm or reverse the trial-log gate written into Document 01 §17 (§5).
-- Decide whether `mom_v1` goes end-to-end through validation before the XBRL-heavy `ltqv_v1` work.
+- Set up the warehouse machine: Python 3.12, `PyYAML==6.0.3`, `pyarrow==25.0.1`, and run `python3 tests/test_m2.py --require-parquet`.
+- Upload `equity-spec-kit-r5.5.zip` itself to the project.
+- Confirm or amend the two lifecycle records that register both cards as `experimental`. Claude wrote them in the r5.5 re-pin with `decided_by` marked for your confirmation, declaring that no sealed holdout result has been seen.
+- Object, if you wish, to any r5.5 default in §5.
+- **Recommended: take `mom_v1` end-to-end through validation before the XBRL-heavy `ltqv_v1` work.** It needs only exchange files and exercises the whole chain.
 
 **Facts only Stage 0 can establish:**
 
 - Surveillance framework start dates.
 - Depth of the F&O, price-band and delivery archives.
+- **Share-count history depth for the top-500 universe**, which gates both strategies.
+- How often ISINs change on sub-division, and the real `security_lineage`.
 - Whether rights-entitlement prices from 2020 were retained.
 - The auditor-change disclosure archive, and related-party filings.
 - Vendor point-in-time integrity.
 - Current exchange-charge rate and stamp-duty sides.
-- The FY 2024-25 tax straddle.
+- The FY 2024-25 tax straddle (the reference now pins the proposed treatment; confirmation is still due).
 - How the Ind AS transition affects `ltqv_v1`'s evaluable window.
 - How far back exchange XBRL financial results go. This decides whether a vendor is needed for `ltqv_v1`'s 16 years.
-- Real NSE file layouts (S0.6), price-band file semantics (S0.7), and Parquet on the warehouse machine (S0.8).
+- Real NSE file layouts (S0.6), price-band file semantics (S0.7), Parquet on the warehouse machine (S0.8), and the quarantine limit on real files.
 
 ## 7. Roadmap
 
 | Stage | What | Gate before moving on |
 | --- | --- | --- |
-| **0 — Data reality** | Exchange-file ingestion, XBRL parser prototype, security master (M1), price ingester (M2), look-ahead canary, source-coverage report, vendor bake-off | Document 02 §17 acceptance |
-| 1 — Point-in-time core | M3–M6, run manifests, orchestrator (M16) | PIT golden cases pass on real data |
-| 2 — Strategy engines | M7–M9, backtest lab (M14), lifecycle registry (M17) | Production engine passes every golden case unmodified |
-| 3 — Surfaces | Opportunity store, briefs and notifications, portfolio state (M15) | Lifecycle, reconciliation and non-execution tests |
+| **0 — Data reality** | Exchange-file ingestion, XBRL parser prototype, security master (M1, with `security_lineage`), price ingester (M2), look-ahead canary, source-coverage report, vendor bake-off | Document 02 §17 acceptance |
+| 1 — Point-in-time core | M3–M6, run manifests with snapshot persistence, orchestrator (M16) | PIT golden cases pass on real data; M6 equals `reference_features.py` |
+| 2 — Strategy engines | M7–M9, backtest lab (M14), lifecycle registry (M17) | Production engine passes every golden file unmodified |
+| 3 — Surfaces | Opportunity store, briefs and notifications, portfolio state (M15) | Lifecycle, reconciliation, actual-versus-model and non-execution tests |
 | 4 — Shadow | Strategies run live without recommending | Promotion evidence per Document 04 |
 | 5 — AI research | Change detector and AI extraction (M11–M12) | Document 05 |
 | 6 — Intraday | Intraday data and engines | Intraday data contract and validation class |
 
-Supporting documents still to write: Document 07 (build, release and operations — before shadow use), Document 05 (AI evidence — before M12), Document 06 (presentation — before the dashboard).
+Supporting documents still to write: Document 07 (build, release and operations — phased), Document 05 (AI evidence — before M12, including counter-evidence coverage conditions), Document 06 (presentation — before the dashboard).
 
 ## 8. The immediate next step
 
@@ -215,13 +235,20 @@ Supporting documents still to write: Document 07 (build, release and operations 
 1. Run every batch-1 file through the parsers. Correct each parser to the real layout, and turn each real file into a fixture with hand-checked values. Every correction gets a test that would have caught it.
 2. Settle the price-band file's semantics, then build `band_close_state` with golden cases.
 3. Settle reissue semantics, adding tombstones if a reissue is a complete snapshot (B10).
-4. Decide how zero-price and zero-volume rows are handled. Today's OHLC check would reject a whole file containing one.
+4. Decide how a genuine no-trade row is stored. Quarantine already stops one such row from rejecting the day. Calibrate `max_quarantine_share` on the real files.
 5. Take the first readings of archive depth and publication times. Those readings move `inferred_basis` from `unverified` to `measured` where live capture allows.
-6. On the warehouse machine, install and pin `pyarrow`, and get `tests/test_m2.py --require-parquet` passing. **Warehouse data is not trusted until then.**
+6. On the warehouse machine, run `tests/test_m2.py --require-parquet`. **Warehouse data is not trusted until it passes.**
+7. When the scheduled downloader starts live capture, set `backfill.live_capture_start` in the source policy.
 
-**If batch 1 is delayed,** S2 can start on synthetic data: the trading calendar (including whether a muhurat bar counts in rolling windows), the corporate-action arithmetic, and the special-dividend threshold (H1).
+**If batch 1 is delayed,** S2 can start on synthetic data: the trading calendar, `security_lineage` across ISIN changes, the corporate-action arithmetic, the share-count seed, and the special-dividend threshold (H1).
 
-**Later gates** are in Document 01 §17 and Issue Log §11. The next big one: before the first calibration run, build the trial log, holdout enforcement, drawdown and Brinson–Fachler (with cash as a segment), the run-manifest validator, and the simulation identity.
+**Later gates** are in Document 01 §17 and Issue Log §11. The next big one, before the first calibration run:
+
+- the trial log and holdout enforcement;
+- Brinson–Fachler with cash as a segment;
+- the run-manifest validator;
+- the simulation identity;
+- each card's measurement parameters pre-registered.
 
 Each slice ends with passing tests, an updated package, and an updated START-HERE.
 
@@ -231,7 +258,7 @@ Each slice ends with passing tests, an updated package, and an updated START-HER
 2. Every fix needs a test that would have caught it.
 3. Claims about the package are verified by running it, never by reading the changelog.
 4. Rules that matter live in the registry, a schema or a card expression — never only in prose.
-5. A registry change re-pins every card, by version and SHA-256, and bumps card versions.
+5. A registry change re-pins only the cards whose closure it touches; a card whose meaning changed gets a new version and a new lifecycle registration.
 6. A strategy's status changes only through a lifecycle transition record with the evidence its schema requires.
 7. Harsh's reviewers' feedback is assessed on merit and verified against the code. Agreement is never assumed, and disagreement is stated plainly.
 8. **At the end of every working session, Claude updates this file:** state, decisions, open items, next step, and the date.
@@ -240,6 +267,7 @@ Each slice ends with passing tests, an updated package, and an updated START-HER
 
 | Date | Release | Change |
 | --- | --- | --- |
+| 24 Sep 2026 | r5.5 | Independent audit of r5.4 resolved: reference card engine and card-level goldens, evaluation semantics, construction and scale, closure pinning and lifecycle records, feature library, promotion hurdle, M2 fixes, mutation check |
 | 23 Sep 2026 | r5.2 | Created as the living handover at the end of the specification phase |
 | 24 Sep 2026 | r5.4 | Correction release: review findings that need no real data fixed with tests; three defects found while fixing; documents made consistent and checked automatically |
 | 24 Sep 2026 | r5.3 | Four external reviews assessed and verified against the package; r5.4 correction scope set; two gate changes proposed |

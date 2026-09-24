@@ -29,6 +29,43 @@ def packaged():
     return out
 
 
+def release_lines(present):
+    """r5.5 (audit D1): every document's subtitle names the current release (r5.4 shipped Doc 03 saying r5.2)."""
+    out = []
+    for f in sorted(present):
+        if f.startswith("Issue-Log"):
+            continue
+        lines = open(os.path.join(DOCS, f)).read().split("\n", 4)
+        m = re.search(r"Release (r\d+\.\d+)", "\n".join(lines[:4]))
+        if not m or m.group(1) != RELEASE:
+            out.append(f"{f}: release line says {m.group(1) if m else 'nothing'}, the package is {RELEASE}")
+    return out
+
+
+def _headings(text):
+    return {m.group(1) for m in re.finditer(r"^#{2,3} (\d+)\.", text, re.M)}
+
+
+SEC = re.compile(r"\b(?:Document|Doc)\s+0([1-4])(?:\s+r\d+)?\s*(?:§|s)(\d+)\b")
+
+
+def section_references(pk):
+    """r5.5 (audit D1): every 'Document 0N §M' / 'Doc 0N sM' names a heading that exists - in every document and
+    in the registry (r5.4's registry cited 'Doc 02 s14' after the section had become s13)."""
+    heads = {n: _headings(open(os.path.join(DOCS, f)).read()) for n, (_, f) in pk.items()}
+    out = []
+    sources = [(f, open(os.path.join(DOCS, f)).read()) for f in sorted(os.listdir(DOCS)) if f.endswith(".md")]
+    sources.append(("registry.yaml", open(os.path.join(KIT, "registry.yaml")).read()))
+    for name, text in sources:
+        if name.startswith("Issue-Log"):
+            text = text.split("\n## 12.", 1)[-1] if "\n## 12." in text else text.split("\n## ", 1)[0]
+        for m in SEC.finditer(text):
+            n, sec = m.group(1), m.group(2)
+            if n in heads and sec not in heads[n]:
+                out.append(f"{name}: '{m.group(0)}' names no section {sec} in Document 0{n}")
+    return out
+
+
 def main():
     problems = []
     pk = packaged()
@@ -60,6 +97,7 @@ def main():
     il = [f for f in present if f.startswith("Issue-Log")]
     if len(il) != 1 or RELEASE not in open(os.path.join(DOCS, il[0])).readline():
         problems.append(f"the Issue Log title must include {RELEASE}")
+    problems += release_lines(present) + section_references(pk)
     for p in problems:
         print("FAIL ", p)
     print(f"release consistency: {'OK' if not problems else f'{len(problems)} problem(s)'}")
