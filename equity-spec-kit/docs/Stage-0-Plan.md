@@ -1,6 +1,6 @@
 # Stage 0 Plan — Data Reality
 
-*Release r5.5 · 24 September 2026 · living plan; status per slice is kept in START-HERE.md*
+*Release r5.6 · 24 September 2026 · living plan; status per slice is kept in START-HERE.md*
 
 Stage 0 proves the data exists, can be parsed, and can be made point-in-time honestly. It closes on Document 02 §17's acceptance list and nothing less. Every verification item there ends as a confirmed fact or a documented limitation.
 
@@ -10,8 +10,8 @@ The chat environment has **no internet and no `pyarrow`**. The split is therefor
 
 - **Development happens in chat**, against sample files Harsh uploads.
 - **The warehouse lives on Harsh's machine**, which downloads files and runs ingestion.
-- **What that machine needs:** Python 3.12, `PyYAML==6.0.3`, and `pyarrow==25.0.1` (the pin in `requirements.txt`; it passed the full M2 suite in r5.5 testing on Python 3.11 — re-validate on the machine).
-- **Warehouse-machine gate:** before any real data is trusted there, `python3 tests/test_m2.py --require-parquet` must pass on that machine. It runs every M2 case on both codecs.
+- **The warehouse machine runs Windows.** It needs Python 3.12 and `python -m pip install -r requirements-dev.txt` (PyYAML 6.0.3, pyarrow 25.0.1, pytest 9.1.1). Keep the kit's files byte-exact: unzip it as delivered, or, in git, keep the repository's `* -text` attribute so line endings are never converted.
+- **Warehouse-machine gate:** before any real data is trusted there, `py -3.12 run_all.py --require-parquet` must pass **on that machine**. It runs every contract command, including every M2 case on both codecs through the real Windows primitives (`MoveFileExW` write-through, `msvcrt` locking). Elsewhere those paths are only exercised against an emulation (README, Certification).
 
 ## 2. Sources
 
@@ -48,9 +48,9 @@ Parts are immutable. The manifest is the only list of what exists. Readers never
 
 | Slice | Scope | Done when |
 | --- | --- | --- |
-| **S1 — M2 prices** (r5.3, hardened r5.4 and r5.5) | Parsers for both bhavcopy formats and MTO delivery; versioned observations; per-source availability; backfill guard; two read contracts with a lossless panel; canary; batch-atomic, locked warehouse; codec-independent validation; row quarantine | ✅ on synthetic data (counts in README), on both codecs; crash at every batch boundary and a two-writer race tested |
+| **S1 — M2 prices** (r5.3, hardened r5.4, r5.5 and r5.6) | Parsers for both bhavcopy formats and MTO delivery; versioned observations; per-source availability; backfill guard; two read contracts with a lossless panel; canary; batch-atomic, locked warehouse; codec-independent validation; row quarantine; write-once raw landing; per-platform durable replace; an OS writer lock a crash releases | ✅ on synthetic data (counts in README), on both codecs and both platform paths (Windows emulated); crash at every batch boundary, a two-writer race and a writer killed while holding the lock tested. **Pending: the same suite on the Windows warehouse machine** |
 | **S1b — M2 on real files** | Harden the parsers on batch 1; band file and `band_close_state`; reissue semantics and tombstones if needed (B10); how a genuine no-trade row is stored, and the quarantine limit, calibrated on real files; Parquet on the warehouse machine; first archive-depth and publication-time readings | Batch 1 parses exactly; `--require-parquet` passes; S0.6–S0.8 and B10 closed |
-| S2 — M1 security master | Trading calendar (muhurat excluded from rolling windows, per the registry's window conventions; special pre-open); `security_lineage` across ISIN changes, and aliases, including symbol reuse across decades; corporate actions, with the special-dividend threshold settled (H1); share counts and their seed; adjusted and total-return series | Continuous series across a split with an ISIN change, a bonus, a rights issue and a demerger, stub valued |
+| S2 — M1 security master | Trading calendar with `session_type` (muhurat and special pre-open sessions stored but not executable, per the registry's `session_policy`); `security_lineage` across ISIN changes, and aliases, including symbol reuse across decades; corporate actions, with the special-dividend threshold settled (H1); share counts and their seed; adjusted and total-return series | Continuous series across a split with an ISIN change, a bonus, a rights issue and a demerger, stub valued |
 | S3 — XBRL prototype | Same three securities in 2015, 2019 and 2024 filings; duration normalisation; restatements | Doc 02 §17 XBRL items pass; depth of free XBRL history measured |
 | S4 — Coverage report | Surveillance and F&O start dates; band, delivery and rights-entitlement depth; auditor-change and related-party archives; **share-count history depth for the top-500 universe** (it gates both strategies) | Every §17 verification item confirmed or a documented limitation |
 | S5 — Vendor bake-off | Only if S3 shows the gap: 30–50 securities, timestamps and restatement history | Pass/fail per vendor recorded |

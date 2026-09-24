@@ -1,6 +1,6 @@
-# Equity Opportunity System — Specification v5.5
+# Equity Opportunity System — Specification v5.6
 
-*Release r5.5 · 24 September 2026 · Controlling package bound by MANIFEST.json*
+*Release r5.6 · 24 September 2026 · Controlling package bound by MANIFEST.json*
 
 ## 1. What this system is
 
@@ -90,15 +90,15 @@ The two reference strategies prove the framework; they are not the product's bou
 | Strategy lifecycle as an audited state machine held in lifecycle records outside the card, with publication rights enforced server-side | An unvalidated experiment reaching your feed because it looks exciting today |
 | Separate model and actual ledgers | Confusing strategy quality with your own choices |
 | Run manifests binding data, code, cards, registry closures, lifecycle records, policies and environment by hash | Results that cannot be reproduced |
-| Document 04 validation protocol: executable golden cases for simulation, features and cards, planted defects that must all be caught, and a mutation check on fixture adequacy; dated cost and tax schedules; a promotion hurdle that rises with the number of trials; a per-lineage holdout ledger that inherits exposure across derived lineages; an append-only trial log (enforcement built before the first calibration run) | Backtests that reward curve-fitting, or assume fills and costs that couldn't happen |
+| Document 04 validation protocol: executable golden cases for simulation, features, cards and whole populations through to published claims, planted defects that must all be caught, and a mutation check on fixture adequacy; dated cost and tax schedules; a promotion hurdle that rises with the number of trials; a per-lineage holdout ledger that inherits exposure across derived lineages; an append-only trial log (enforcement built before the first calibration run) | Backtests that reward curve-fitting, or assume fills and costs that couldn't happen |
 | A read-only broker adapter with no order methods, and a network policy denying broker access to the AI and dashboard components | Any path from a recommendation to an order |
 
 ## 7. Status and readiness
 
 | Gate | State |
 | --- | --- |
-| Architecture, data contract, validation protocol | r5.5 — every finding of the independent audit of r5.4 is resolved in the package, each with a test that fails against r5.4 (Issue Log §12); the single Stage 0 registry re-pin is done. Remaining items are scheduled to the phase where they first matter (Document 01 §17) |
-| Stage 0: sources, parsers, security master, prices | **In progress.** M2 price ingestion is built (r5.3), hardened (r5.4) and made codec-independent with row quarantine (r5.5); its full suite passes on Parquet. Real-file hardening (S1b) waits for the NSE sample files |
+| Architecture, data contract, validation protocol | r5.6. Every finding of the independent audit of r5.4 (Issue Log §12) and of the review of r5.5 (§13) is resolved in the package, each with a test that fails on the release it came from. Remaining items are scheduled to the phase where they first matter (Document 01 §17) |
+| Stage 0: sources, parsers, security master, prices | **In progress.** M2 price ingestion is built (r5.3), hardened (r5.4), made codec-independent with row quarantine (r5.5), and given per-platform durability, a crash-safe OS writer lock and write-once raw landing (r5.6). Its full suite passes on Linux on both codecs and on the Windows code paths under emulation. **It has not yet been run on the Windows warehouse machine: that run is the next gate** (README, Certification). Real-file hardening (S1b) waits for the NSE sample files |
 | Formal backtesting | Protocol, reference engine and golden cases exist. Blocked until the production engine (M5, M6, M7, M14) passes every golden file unmodified; the trial log, holdout enforcement, Brinson–Fachler and the run-manifest validator exist; each card's measurement parameters are pre-registered; and your contract note reconciles with the cost model |
 | Shadow use | Blocked until a strategy passes backtest, holdout and golden cases, and you set its OPEN parameters |
 | Production recommendations | Blocked until shadow evidence supports promotion |
@@ -110,22 +110,23 @@ The controlling set is the file package whose SHA-256 digests are recorded in `M
 
 | Artefact | Role |
 | --- | --- |
-| This overview (v5.5) | Product scope and principles |
-| Document 01 r8 — Core Platform Architecture | Modules, flows, evaluation semantics, state machines, boundaries |
-| Document 02 r5 — Data Contract & Canonical Schema | Every table, field, source, timing rule and feature definition |
-| Document 03 r7 — Strategy Pack | Reference strategies; card sections generated from the YAML |
-| Document 04 r4 — Validation Protocol | Simulation, costs, tax view, holdout lineage, trials, stress, metrics, promotion statistics, acceptance |
-| `registry.yaml` 3.0.0 | Single owner of feature, vocabulary and evaluation-semantics metadata; each entry versioned |
+| This overview (v5.6) | Product scope and principles |
+| Document 01 r9 — Core Platform Architecture | Modules, flows, evaluation semantics, state machines, boundaries |
+| Document 02 r6 — Data Contract & Canonical Schema | Every table, field, source, timing rule and feature definition |
+| Document 03 r8 — Strategy Pack | Reference strategies; card sections generated from the YAML |
+| Document 04 r5 — Validation Protocol | Simulation, costs, tax view, holdout lineage, trials, stress, metrics, promotion statistics, acceptance |
+| `registry.yaml` 3.1.0 | Single owner of feature, vocabulary, evaluation-semantics and session-policy metadata; each entry versioned |
 | `lifecycle/`, `register_card.py` | Each card version's status and the evidence behind it |
 | `policies/market_universe.yaml` | The universe policy: N = 500 and its buffers |
 | `strategies/*.yaml` | The only executable source of each strategy |
 | `schemas/*.json` | Card, run-manifest, portfolio-policy and lifecycle-transition schemas |
 | `speclint.py`, `test_speclint.py`, `render_cards.py`, `make_manifest.py` | Compiler, regression suite, rendering parity, package binding |
-| `reference_sim.py`, `reference_features.py`, `reference_engine.py`, `golden/*.yaml`, `test_golden.py`, `test_features.py`, `test_card_golden.py`, `mutation_check.py`, `schedules/*.yaml` | Executable meaning of simulation, features and cards; golden cases; fixture-adequacy check; dated cost and tax schedules |
+| `reference_sim.py`, `reference_features.py`, `reference_engine.py`, `golden/*.yaml`, `test_golden.py`, `test_features.py`, `test_card_golden.py`, `test_pipeline.py`, `mutation_check.py`, `schedules/*.yaml` | Executable meaning of simulation, features, cards and the whole evaluation; golden cases; fixture-adequacy check; dated cost and tax schedules |
+| `run_all.py`, `tests/test_portability.py`, `requirements*.txt` | One command for every check on any OS; portability regressions; pinned dependencies |
 | `portfolio_policy.yaml` | Your policy, values OPEN until you set them; the allocator's rules are fixed |
 | Stage 0 Plan | Data-reality sources, order of work, files to download |
 | `eos/`, `tests/`, `policies/source_policy.yaml` | Product code (Stage 0), its tests, and the source and availability policy |
-| Issue Log & Traceability r5.5 | Disposition of every review finding |
+| Issue Log & Traceability r5.6 | Disposition of every review finding |
 
 ## 9. What comes next
 

@@ -1,8 +1,8 @@
-# Data Contract & Canonical Schema — Document 02 r5
+# Data Contract & Canonical Schema — Document 02 r6
 
-*Release r5.5 · 24 September 2026 · current state only; revision history is in the Issue Log*
+*Release r5.6 · 24 September 2026 · current state only; revision history is in the Issue Log*
 
-Governs every table, field, source, timing rule and feature definition referenced by Document 01 r8 and the strategy cards. The corrections the real Stage 0 files teach go into the next revision, r6, at Stage 0 close. A card owns its thresholds; how the compared value is computed is defined here and in `registry.yaml`. An identifier a card uses that is not in the registry fails the build.
+Governs every table, field, source, timing rule and feature definition referenced by Document 01 r9 and the strategy cards. The corrections the real Stage 0 files teach go into the next revision, r6, at Stage 0 close. A card owns its thresholds; how the compared value is computed is defined here and in `registry.yaml`. An identifier a card uses that is not in the registry fails the build.
 
 ## 1. Conventions
 
@@ -77,7 +77,15 @@ Exchange files describe trading that already happened, and the proposed order ex
 
 **Usable in the run for D** if and only if `usable_from ≤ cutoff(domain of the row, D)`. Orders proposed by that run execute at `next_executable_session(D)`.
 
-**Trading calendar.** `trading_calendar(date, is_trading_day, session_type)` with `session_type` in `normal`, `muhurat`, `special_preopen`, `holiday`, `closure`. `next_executable_session(D)` is the first later trading day that is not `muhurat`. "N sessions after" always counts executable sessions.
+**Trading calendar.** `trading_calendar(date, is_trading_day, session_type)` with `session_type` in `normal`, `muhurat`, `special_preopen`, `holiday`, `closure` (registry enum `session_type`).
+
+**Session policy** (registry `session_policy`, v1, a platform choice):
+
+- NSE trades in `normal` and `muhurat` sessions. Muhurat is a real session, and its bars are ingested and stored like any other.
+- Only `normal` sessions are **executable**. A muhurat or special pre-open session is not a unit for any rolling window, lookback, `persist` or holding count. No evaluation runs in it, and no entry, exit or stop is proposed, tested or filled in it.
+- A return spans two consecutive executable sessions, so the muhurat price move falls in the next executable session's return. The exchange's own `prev_close` for that session is the muhurat close.
+
+`next_executable_session(D)` is the first later executable session. "N sessions after" always counts executable sessions. Changing the policy is a new `session_policy` version, which re-pins every card.
 
 **Fiscal periods** are identified by actual `period_start` and `period_end`, never assumed.
 
@@ -139,9 +147,9 @@ Exchange files describe trading that already happened, and the proposed order ex
 | Contract | Cutoff | Use |
 | --- | --- | --- |
 | `history_known_as_of(E)` (Document 02 name `price_raw_resolved`) | E's cutoff, for every trade date up to E | The exact input of **one** decision at E. A correction received by E replaces the original print, even for earlier bars |
-| `point_in_time_panel(start, end)` with `panel_as_of(panel, E)` | Each trade date's **own** cutoff; a bar first published after it keeps its first version and real `usable_from` | A look-ahead-free panel for a **sequence** of decisions. Each bar is taken as first known, so corrections a later decision could have seen are ignored — a conservative choice. `panel_as_of` masks what decision E could not yet use; no bar a later decision had is ever dropped |
+| `point_in_time_panel(start, end)` with `panel_as_of(panel, E)` | Each trade date's **own** cutoff; a bar first published after it keeps its first version and real `usable_from` | A look-ahead-free panel for a **sequence** of decisions. Each bar is taken as first known, so a correction a later decision could have seen is ignored. That makes the panel **information-poorer** than the decision was, not "conservative": a stale, wrong print can flatter a strategy as easily as penalise it. `panel_as_of` masks what decision E could not yet use; no bar a later decision had is ever dropped |
 
-A sequence of historical decisions uses either the exact per-date view or the masked panel. It must never use `history_known_as_of(end)` over the whole range, because every earlier decision would then see corrections that arrived after it. Everything downstream reads a resolved view.
+A sequence of historical decisions uses either the exact per-date view or the masked panel, and its run manifest records which (`price_read_contract`: `exact_per_decision` or `first_known_panel`). **Exact per-decision reads are the evidential standard.** A sealed holdout evaluation must use them, and panel results are labelled and never promotion evidence (Document 04 §7). A sequence must never use `history_known_as_of(end)` over the whole range, because every earlier decision would then see corrections that arrived after it. Everything downstream reads a resolved view.
 
 **Series.**
 
@@ -256,15 +264,17 @@ Total shares are used, not free float, so this is the *point-in-time top-N marke
 
 Partitioned Parquet with a `_manifest.json` per partition. There is no persistent database file.
 
+**Raw landing.** Before a source file is parsed, its exact bytes are landed at `_raw/<source_id>/<sha256><ext>`. The landed copy is content-addressed and write-once: landing the same bytes again is a no-op, and a landed file whose bytes no longer match its name is an integrity failure. The file is marked read-only. Parsing reads the landed copy, never the download folder, so nothing that happens to the original later can change what was ingested. `raw_file` (`source_id` · `file_sha256` · `original_name` · `source_url` · `retrieved_at` · `received_at` · `size_bytes` · `landed_path`) is committed in the same batch as the file's observations. A rejected file's bytes stay landed, as evidence of what was received, but get no `raw_file` row.
+
 **One pre-write validator for every codec.** Before any part is written, every row is checked against its table schema. Naive timestamps, unknown columns, floats where the schema says decimal and booleans where it says integer are refused, on Parquet exactly as on the JSONL test codec.
 
 **Every logical write is one all-or-nothing batch.** One source file, for example, writes observations, conflicts, quarantined rows, coverage and its ingestion-log entry. The batch runs in three steps:
 
-1. Its parts are staged: written to temporary files, fsynced and renamed, but listed by no manifest.
+1. Its parts are staged: written to temporary files, flushed to disk and durably moved into place, but listed by no manifest. A durable move is platform-specific (`eos/fsio.py`). On POSIX it is `rename` followed by an fsync of the directory. On Windows it is `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`; no directory is ever opened, and a sharing violation from a scanner holding the file is retried with bounded backoff.
 2. One batch record is written atomically. **This is the commit point.**
 3. The manifests are updated idempotently, and an applied-marker is written.
 
-A reader refuses to read while any committed batch is unapplied, and the next writer rolls such a batch forward. A part listed without a commit record is an integrity failure. All writes run under one warehouse lock, which spans reading the latest version, allocating the next one and committing, so no two writers can allocate the same version. A snapshot lists every manifest hash in use. The bootstrap script is generated from the snapshot and lists files explicitly — never globs — so no query reads a partition written after its snapshot. Old adjustment versions are kept until no snapshot references them.
+A reader refuses to read while any committed batch is unapplied, and the next writer rolls such a batch forward. A part listed without a commit record is an integrity failure. All writes run under one warehouse lock, which spans reading the latest version, allocating the next one and committing, so no two writers can allocate the same version. The lock is an operating-system lock on `.writer.lock` (`flock` on POSIX, `msvcrt.locking` on Windows). The OS releases it when the holding process dies, so a crash never leaves a stale lock, and the file itself is never deleted. `.writer.owner` records the holder's pid, host and start time, for diagnosis only. A snapshot lists every manifest hash in use. The bootstrap script is generated from the snapshot and lists files explicitly — never globs — so no query reads a partition written after its snapshot. Old adjustment versions are kept until no snapshot references them.
 
 ## 13. Governance and forensic source contracts
 
@@ -340,15 +350,15 @@ No intraday card can pass `experimental` until these are implemented; the linter
 
 ## Appendix A — Registry
 
-`registry.yaml` 3.0.0 in the spec kit is authoritative and is not reproduced here. Every entry carries its own version. It holds:
+`registry.yaml` 3.1.0 in the spec kit is authoritative and is not reproduced here. Every entry carries its own version. It holds:
 
 - **Features and functions:** 41 features and 8 forensic flags; 10 typed functions, with the date arguments of price functions restricted (`impact_cost` is `impact_model_v1`, Document 04 §5).
-- **Normative blocks:** `evaluation_semantics`, `window_conventions`, `cross_sectional_scoring`, the two cutoff domains, the materiality list and the confidence policy.
+- **Normative blocks:** `evaluation_semantics`, `window_conventions`, `session_policy`, `cross_sectional_scoring`, the two cutoff domains, the materiality list and the confidence policy.
 - **Runtime identifiers:** 26, with owners and initialisation/update rules.
-- **Enums:** 21, with literals always namespaced (`surveillance_stage.none`).
+- **Enums:** 22, with literals always namespaced (`surveillance_stage.none`).
 - **Classes and triggers:** 5 strategy classes, 5 data resolutions and 5 triggers.
 - **Vocabularies:** 4 benchmarks, 29 sector codes and 2 sizing methods.
 - **Events, identity and policy:** 4 void events with predicates and declared parameters; security identity; valuation-transformative actions; the corporate-action policy v3.
 - **Retired identifiers:** 27.
 
-To change it: edit the file and run `python3 speclint.py`. A card whose closure the edit touched fails with its new closure hash. Re-validate that card, version it if its meaning changed, re-pin it, and register the new version (`register_card.py`). Cards whose closure the edit did not touch are unaffected. Add a regression or golden case for whatever the change prevents.
+To change it: edit the file and run `python speclint.py`. A card whose closure the edit touched fails with its new closure hash. Re-validate that card, version it if its meaning changed, re-pin it, and register the new version (`register_card.py`). Cards whose closure the edit did not touch are unaffected. Add a regression or golden case for whatever the change prevents.

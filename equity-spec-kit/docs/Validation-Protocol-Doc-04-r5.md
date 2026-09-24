@@ -1,6 +1,6 @@
-# Validation Protocol — Document 04 r4
+# Validation Protocol — Document 04 r5
 
-*Release r5.5 · 24 September 2026 · governs how every backtest, shadow run and promotion is conducted*
+*Release r5.6 · 24 September 2026 · governs how every backtest, shadow run and promotion is conducted*
 
 ## 1. Purpose and what counts as evidence
 
@@ -22,7 +22,8 @@ The golden cases are executable and live in the package:
 | --- | --- |
 | `reference_sim.py`, `golden/golden_cases.yaml`, `test_golden.py` | Simulation, costs, tax, corporate actions, point-in-time reads, scoring and promotion statistics. Synthetic cases, answers computed by hand; planted defects must all be caught |
 | `reference_features.py`, `golden/feature_cases.yaml`, `test_features.py` | Every feature and forensic flag a card reads, at its presence thresholds and window lengths; planted definition defects; an automated check that every card-read feature has cases |
-| `reference_engine.py`, `golden/card_cases.yaml`, `test_card_golden.py` | The cards themselves: gates, exits, filters, confidence, ranking, sizing, tranches, the stop, construction and scale, evaluated from the YAML; planted **card edits** must each break a case |
+| `reference_engine.py`, `golden/card_cases.yaml`, `test_card_golden.py` | The cards themselves: gates, exits, filters, confidence, ranking (including unrankable and conflicted inputs), sizing, tranches, the stop, construction, scale and the session policy, evaluated from the YAML; planted **card edits** must each break a case |
+| `reference_engine.run_pipeline`, `golden/pipeline_cases.yaml`, `test_pipeline.py` | End to end: a population through universe, filters, ranking, gates, size checks, capacity and quantities to the model portfolio and the published claims; planted defects (including every r5.5 behaviour the review of r5.5 found) must each break a case |
 | `mutation_check.py`, `golden/mutation_allowlist.yaml` | Fixture adequacy: every comparison, operator and constant in the two reference modules is mutated; each survivor must be a reviewed equivalent mutant with a written reason |
 
 Counts are in the README, never in prose.
@@ -167,6 +168,8 @@ Each card declares `warm_up_years`, `evaluable_years` and `holdout_years` (Docum
 
 **A registry edit is not a card change.** A card's identity is its file hash plus its registry closure (Document 01 §8). An edit elsewhere in the registry does not re-version the card and does not burn its holdout. An edit inside the closure changes what the card means, and is treated as a card change.
 
+**Exact reads for evidence.** A multi-date run's manifest declares its `price_read_contract` (Document 02 §6). Evidence for promotion comes only from runs on `exact_per_decision`: history as known at each decision date. The sealed holdout evaluation must use it, and the run-manifest schema refuses a sealed evaluation on anything else. `first_known_panel` is look-ahead-free but information-poorer (a known correction is ignored), so its results are for exploration. They are labelled in every report and never counted as promotion evidence.
+
 **The holdout is sealed.** Any run whose manifest has `holdout_access: none` cannot read holdout dates; M5 refuses them. Exactly one run per card version may carry `holdout_access: sealed_evaluation`, and it is recorded in the lifecycle evidence. A second holdout run for the same card version is invalid. Changing a card after seeing its holdout result makes it a new version, which needs fresh holdout data — in practice, a shadow period.
 
 **Calibration** (for example momentum's delivery bands) runs once, on design data only, at the quantile the card pre-registers, and is recorded in the trial log with its inputs. The result is written into the card, making a new version before testing begins.
@@ -252,6 +255,7 @@ Innocuous-looking choices here decide promotions, so each is fixed and has a gol
 - **Design period:** the Newey–West t-statistic (lag 6) of monthly excess return over the primary benchmark is at least the **hurdle**. The hurdle is the two-sided 5% Bonferroni value for the lineage's logged design trials: `Φ⁻¹(1 − 0.05 ÷ (2 × trials))`, which is 1.96 for one trial, 2.58 for five and 3.02 for twenty.
 - **Sealed holdout:** mean excess return is positive **and** consistent with the design estimate — not below the design mean by more than two holdout Newey–West standard errors.
 - **Reported alongside:** the minimum detectable annualised alpha at the design sample's precision (hurdle × SE × 12), so a pass or fail is read against what the data could have shown.
+- **Degenerate evidence never passes.** If the design series has no variation (a Newey–West standard error below 1e-12), the t-statistic is undefined. Examples are a strategy that never traded, or a data fault that makes every month identical. The decision then reports `degenerate: true` and fails, rather than dividing by zero (golden cases G32g–i).
 
 Sign-only tests, as in r5.4, would pass about one in five strategies with no true alpha (audit B7). The class criteria below come on top of this rule.
 

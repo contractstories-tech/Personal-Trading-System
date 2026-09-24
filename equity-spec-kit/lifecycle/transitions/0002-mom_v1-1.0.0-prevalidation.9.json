@@ -1,0 +1,18 @@
+{
+ "transition_id": "0002-mom_v1-1.0.0-prevalidation.9",
+ "strategy_code": "mom_v1",
+ "lineage": "mom",
+ "card_sha256": "a6209714631cffb95e7824308c695bfeadf7e718ac31f95ddf3dfb05ce17d480",
+ "from_status": "none",
+ "to_status": "experimental",
+ "decided_by": "Claude (r5.6 build, on Harsh's instruction of 24 Sep 2026 to make the review's changes; Harsh to confirm or replace)",
+ "decided_at": "2026-09-24T19:27:07+05:30",
+ "reason": "Registry 3.1.0 re-pin (review of r5.5: evaluation semantics 1.1.0, session policy 1.0.0, narrower closures): card version 1.0.0-prevalidation.9 registered as experimental; no sealed holdout result has been seen for any lineage; supersedes the withdrawn r5.5 records",
+ "evidence": {
+  "linter_report_sha256": "4b65b6426b9c59e5d2083b92e7fed08cf84d6cba31294a46d4c05850342a52ce",
+  "holdout_exposure_declaration": {
+   "derived_from": [],
+   "sealed_results_seen": []
+  }
+ }
+}

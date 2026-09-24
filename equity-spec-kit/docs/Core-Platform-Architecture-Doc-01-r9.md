@@ -1,6 +1,6 @@
-# Core Platform Architecture — Document 01 r8
+# Core Platform Architecture — Document 01 r9
 
-*Release r5.5 · 24 September 2026 · current state only; revision history is in the Issue Log*
+*Release r5.6 · 24 September 2026 · current state only; revision history is in the Issue Log*
 
 ## 1. Purpose, boundary and invariants
 
@@ -30,12 +30,12 @@ The platform continuously evaluates Indian listed equities across every active s
 | `reference_engine.py`, `reference_features.py`, `reference_sim.py` | Executable meaning of cards, features and simulation | Fixed by the golden files; production must match |
 | Document 03 | Explanation of the strategies; card sections **generated** from the YAML | Never authoritative over the YAML; parity-checked |
 | `schemas/*.json` | Closed shapes for cards, run manifests, portfolio policy, lifecycle transitions, holdout ledger | Machine form |
-| Document 04 r4 | Validation, simulation, costs, tax, golden cases, promotion statistics | Governs how backtests are run and judged |
+| Document 04 r5 | Validation, simulation, costs, tax, golden cases, promotion statistics | Governs how backtests are run and judged |
 | Document 05 *(before M12)* | AI evidence schema, threat model, model governance | Gate before any AI component |
 | Document 06 *(before dashboard)* | Presentation semantics | — |
 | Document 07 *(phased — §17)* | DDL, migrations, CI, deployment, operations, non-execution enforcement | Each control is due at the phase §17 names |
 
-**The controlling package is the set of files bound by `MANIFEST.json`.** An editable document is a draft until it is exported into the package and hashed.
+**The controlling package is the set of files bound by `MANIFEST.json`.** An editable document is a draft until it is exported into the package and hashed. Two files live outside the package and control nothing in it: `START-HERE.md`, the project's status and handover note, and `audit/`, the audit reports and their reproduction scripts. On what the system is and does, the package wins.
 
 ## 3. Modules and flow
 
@@ -98,7 +98,7 @@ M16 runs every registered engine on the triggers its card declares; you never ch
 | Trigger | Fires | Typical use |
 | --- | --- | --- |
 | `daily_eod` | After the day's exchange files arrive (feed deadline 23:00 IST) | Risk loops; long-term re-evaluation |
-| `weekly_eod` (weekday W) | The last executable session of each ISO week on or before W — Thursday when Friday is a holiday or a muhurat-only day; a week with none is skipped | Momentum entry |
+| `weekly_eod` (weekday W) | The last executable session of each ISO week on or before W — Thursday when Friday is a holiday or a muhurat session, which trades but is not executable under the registry's `session_policy`; a week with none is skipped | Momentum entry |
 | `on_filing` | When M3 records a new or revised filing | Marks the security for the **next** `daily_eod` evaluation. A filing at 10:00 never evaluates against a session that has not closed |
 | `intraday_interval` (minutes) | During the session | Intraday — reserved |
 | `continuous_session` | On each new bar or quote | Intraday — reserved |
@@ -124,13 +124,22 @@ The registry's `evaluation_semantics` (versioned, and inside every card's closur
 - **Values.** `missing`, `stale`, `conflicted` and `not_applicable` are *non-known*. `out_of_domain` resolves by the feature's declared outcome (`fail` or `drop`).
 - **Arithmetic.** Decimal. Gate, exit and filter inputs are quantised to 9 decimal places (half-even) and then compared exactly with the card's literals, so two feature builds that differ only by floating-point summation order reach the same decision.
 - **Gates** resolve inputs before any logic, in this order: a non-known input whose effective unknown behaviour is `fail` → FAIL; one whose behaviour is `exclude` → EXCLUDED; an `out_of_domain: fail` input → FAIL; an `out_of_domain: drop` input → UNKNOWN; a non-known `penalise` (secondary) input → UNKNOWN; otherwise the expression is evaluated on known inputs to PASS or FAIL. A composite referenced by a gate carries its inputs. Gates therefore never combine unknowns logically. A `stale` or `conflicted` material input excludes rather than being used.
-- **Candidacy:** every gate PASS, or UNKNOWN on a gate with `unknown_blocks: false` (which the compiler allows only for secondary inputs, directly or through a composite).
+- **Candidacy:** in the candidates after universe filters, every gate PASS or UNKNOWN on a gate with `unknown_blocks: false` (which the compiler allows only for secondary inputs, directly or through a composite), and, in a `rank_and_gate` card, a rank. An **unrankable** security is not a candidate: it is recorded with its reason and never admitted after the ranked ones.
 - **Exits** use Kleene three-valued logic: AND is FALSE if any operand is FALSE, TRUE if all are TRUE; OR is TRUE if any operand is TRUE, FALSE if all are FALSE; otherwise UNKNOWN. An exit **fires** when its expression is TRUE. It also fires when an input it reads (for `persist`, on the latest unit) is `out_of_domain` with outcome `fail` — a thesis input that has become meaningless in the failing direction sells the position rather than holding it — unless the exit declares `on_out_of_domain: review`. Otherwise UNKNOWN raises a review trigger and the position is held.
 - **Universe filters:** FALSE removes a security from the candidates and from the scoring population; UNKNOWN removes it from the candidates only.
-- **`persist(cond, n, unit)`** is TRUE if and only if `cond` is TRUE on the last *n* evaluable units; UNKNOWN if any of them is UNKNOWN or fewer than *n* exist; FALSE otherwise. Non-trading days and muhurat sessions are not units.
+- **`persist(cond, n, unit)`** is TRUE if and only if `cond` is TRUE on the last *n* evaluable units; UNKNOWN if any of them is UNKNOWN or fewer than *n* exist; FALSE otherwise. Non-trading days are not units, and neither are muhurat sessions (below).
+- **Sessions.** Muhurat trading is a real NSE session and its bars are stored. By platform policy (the registry's `session_policy`, v1) only `normal` sessions are *executable*: a muhurat or special pre-open session is not a unit for any window, lookback, `persist` or holding count; no evaluation runs in it; and no entry, exit or stop is proposed, tested or filled in it. Its price move falls in the next executable session's return. This is a choice, not a fact about the exchange: changing it is a new policy version, which re-pins every card.
 - **Selection methods:** `gate_only` (qualifies on gates alone) or `rank_and_gate` (scores the population before gating per the registry's `cross_sectional_scoring`, then ranks the survivors). A rank never forces a recommendation; in a `rank_and_gate` card it decides who fills scarce model-portfolio capacity (§9).
+- **Ranking inputs** (a feature under `z()` in the ranking expression, or an input of a composite it uses) resolve like this:
+  - known: its value is used;
+  - conflicted: its primary value is used, and it lowers confidence;
+  - otherwise, by its effective unknown behaviour. `fail` or `exclude` means no rank. `penalise` means the input is left out of its composite, which still needs `min_inputs_known` inputs; for a direct `z()` term it means no rank. `out_of_domain` with outcome `fail` means no rank, and with outcome `drop` it acts as `penalise`.
+
+  A composite may tolerate missing **secondary** inputs only: the compiler requires `min_inputs_known` to be at least the composite's number of material inputs. So a strategy never ranks on a different formula because material data is missing.
 - **Stops are test-then-update:** the stop in force for session *t* is fixed at the close of *t−1*. Exits are tested first; the stop is then updated for the next session. The fill session is itself session *t*.
-- **Materiality.** Every feature is material unless the registry lists it as secondary. A material input may never be `penalise`, and may never feed a gate that waives on unknown, directly or through a composite. `penalise` has one exact effect: **each penalised input that is not known lowers `data_confidence` by one band** (`high → medium → low → insufficient`). Below `medium` a claim is recorded but never shown as a recommendation. Confidence never changes a score or a rank.
+- **Materiality.** Every feature is material unless the registry lists it as secondary. A material input may never be `penalise`, and may never feed a gate that waives on unknown, directly or through a composite.
+- **Confidence.** `data_confidence` starts at `high` and falls one band (`high → medium → low → insufficient`) for each card feature that is **either** a penalised input that is not known, **or** a conflicted input used in ranking. A feature that is both still costs one band. Below `medium` a claim is recorded but never shown as a recommendation. Confidence never changes a score, a rank, candidacy or the model portfolio. A candidate is taken within capacity whatever its confidence, so what is measured does not depend on what is shown.
+- **Publication.** A claim is published when the model portfolio takes the candidate and its confidence is at least `publish_minimum`. The model takes a candidate when its size-dependent checks pass at model size and a slot and cash remain in capacity order. A candidate the model cannot take is recorded as `size_check_failed` or `no_capacity`, so what is recommended is what is measured. `reference_engine.run_pipeline` is the executable definition, fixed by `golden/pipeline_cases.yaml`: population → universe → filters → ranking → gates → size checks → capacity → quantities → published claims.
 - **Review triggers** appear in monitoring. In a model portfolio they never trade, and every occurrence is counted in the validation report.
 
 ## 8. Strategy cards and the compiler
@@ -139,22 +148,22 @@ A card must satisfy `schemas/card.schema.json` (v6), which is **closed**: any fi
 
 1. **Schema stage** — shapes, types, ranges, positivity, semantic-version form, minimum hypothesis length, structured retirement, calibration (including its sampling), construction, void parameters. Malformed input produces errors, never a crash.
 2. **Semantic stage:**
-   - **The registry pin**: the card pins the canonical SHA-256 of its **registry closure** — the entries it references (its features, the forensic flags if it reads their count, functions, runtime values, enums, class, resolution, triggers, sizing method, void events, corporate-action policy) plus the evaluation semantics, window conventions, scoring, confidence and cutoff policies and security identity. An edit outside the closure (a feature for another strategy, a new sector code, a comment) leaves the pin intact. An edit inside it breaks the pin, and the card must be re-validated, and versioned if its meaning changed.
+   - **The registry pin**: the card pins the canonical SHA-256 of its **registry closure**. That is the entries it references: its features, the forensic flags if it reads their count, functions, runtime values, class, resolution, triggers, sizing method, void events and corporate-action policy. It also includes the enums its expressions compare against or its enum-typed features use, and any registry block a feature declares in `depends_on` (for example `ey_median_5y` depends on `valuation_transformative_actions`). On top of that come the blocks that give every card its meaning: evaluation semantics, window conventions, session policy, confidence and cutoff policies and security identity. Cross-sectional scoring is included only for cards that score a population. An edit outside the closure leaves the pin intact: a feature for another strategy, a new sector code, a new value in an enum the card only uses as a field value (a weekday, a horizon), or a comment. An edit inside it breaks the pin, and the card must be re-validated, and versioned if its meaning changed. Adding a value to a field enum cannot change an existing card's meaning, and every lint checks the card's field values against the current registry.
    - Class, data resolution and triggers; vocabularies; the expression grammar with types and arity; namespaced enum literals.
    - **Permitted date arguments**: price functions accept only `signal_date`, `eval_date` and `prev_session` of either, so no expression can name a session after the evaluation.
-   - **Materiality through composites**, and a **structural hard-cap bound**: every quantity is `min(…, floor(hard_cap_value / entry_high or tranche_limit), …)`.
+   - **Materiality through composites** (including `min_inputs_known` covering every material input), and a **structural hard-cap bound**: every quantity is `min(…, floor(hard_cap_value / entry_high or tranche_limit), …)`.
    - Reference integrity; runtime-state assignment (§11); corporate-action completeness; void-event parameters; construction consistency (a `rank_and_gate` card fills capacity by rank); AI-input declarations; and status-dependent completeness: above `experimental`, no `OPEN`, `CALIBRATE` or placeholder function may remain, in sizing or construction.
 
 `test_speclint.py` holds a regression case for every defect found in every review round, each asserting its specific violation, plus closure-scope, lifecycle and schema-contract checks. It runs directly or under pytest.
 
-**A PASS proves a card is well-formed, not that it is right.** What a card *means* is fixed by executing it: `test_card_golden.py` runs the card's own expressions through `reference_engine.py` against hand-computed cases, and plants card edits that must each break one.
+**A PASS proves a card is well-formed, not that it is right.** What a card *means* is fixed by executing it. `test_card_golden.py` runs the card's own expressions through `reference_engine.py` against hand-computed cases, and plants card edits that must each break one. `test_pipeline.py` runs whole populations through `run_pipeline` to the published claims.
 
 **Freeze criterion for any card:**
 
 - linter PASS;
 - suite PASS;
 - render parity PASS;
-- reference, feature and card-level golden cases PASS;
+- reference, feature, card-level and pipeline golden cases PASS;
 - mutation check PASS.
 
 ## 9. Opportunities, claims, sizing and allocation
@@ -174,9 +183,9 @@ A card must satisfy `schemas/card.schema.json` (v6), which is **closed**: any fi
 - Each card's `construction` sets its maximum positions and capacity order.
 - Existing positions are never displaced.
 - New claims fill free slots in **rank order** (`rank_and_gate`), or in earliest-signal order (`gate_only`).
-- A missing rank sorts last. Ranks within the tie tolerance break on higher market cap, then ISIN.
-- Each claim is sized at `min(target_value, spendable cash)`. Residual cash stays uninvested.
-- `reference_engine.construct` fixes this.
+- Only ranked candidates reach capacity: an unrankable security is not a candidate (§7), and `construct` refuses one. Ranks within the tie tolerance break on higher market cap, then ISIN.
+- Each claim is sized at `min(target_value, spendable cash)`. Its model `hard_cap_value` is `min(notional_capital × max_position_pct, the cash allotted)`, so even the worst permitted fill never overdraws the model's cash. Residual cash stays uninvested.
+- `reference_engine.construct` and `run_pipeline` fix this.
 
 **Allocator (M9b): one security, one decision.** A claim sized on the card's measurement capital becomes a **weight**: `target_weight = target_value ÷ notional_capital`. Then, for the actual recommendation:
 
@@ -199,7 +208,7 @@ A manual holding counts toward caps and "existing holding" priority but creates 
 
 ## 10. Strategy lifecycle and publication rights
 
-**A card version's status is held only in lifecycle transition records** (`lifecycle/transitions/*.json`, schema `strategy_lifecycle_transition.schema.json`): previous and new status, card SHA-256, decision, reason, and the evidence the transition requires. The card file carries no status, so a status change never changes a card's hash. `register_card.py` writes the first record; M17 writes the rest. The linter derives each card's status from the latest record for its exact hash and checks that the chain is continuous.
+**A card version's status is held only in lifecycle transition records** (`lifecycle/transitions/*.json`, schema `strategy_lifecycle_transition.schema.json`): previous and new status, card SHA-256, decision, reason, and the evidence the transition requires. The card file carries no status, so a status change never changes a card's hash. `register_card.py` writes the first record; M17 writes the rest. The linter derives each card's status from the latest record for its exact hash and checks that the chain is continuous. Records are ordered by the **instant** in `decided_at`, which must carry a UTC offset, not by its text: `18:00+05:30` is earlier than `13:00Z`. Two records at the same instant, a record filed before one it was decided after, and a `decided_at` in the future are all errors. `register_card.py` stamps the real time.
 
 | From → to | Evidence required |
 | --- | --- |
@@ -262,6 +271,8 @@ Every price-state value is transformed by the corporate-action policy on ex-date
 ## 13. Storage and reproducibility
 
 - **Parquet is the source of truth**, written atomically, never edited, through one pre-write validator shared by every codec. DuckDB runs in memory over explicit file lists generated from a snapshot. No persistent database file exists.
+- **Every source file is landed first.** Its exact bytes are stored write-once under `_raw/<source_id>/<sha256>` before anything is parsed, and parsing reads that copy. A `raw_file` row, committed in the same batch as the observations, names it (Document 02 §12).
+- **Durability and the writer lock are per platform** (`eos/fsio.py`). A replace is durable through a directory fsync on POSIX, and through `MoveFileExW` with write-through on Windows, the warehouse machine's OS. A Windows sharing violation is retried with bounded backoff. The single writer holds an operating-system lock, released by the OS if the process dies, so a crash never leaves a stale lock.
 - **Run manifest** (`schemas/run_manifest.schema.json`). Every evaluation, backtest, shadow run and replay records:
   - both domain cutoffs, the trading date, and the data snapshot and its hash;
   - the package digest;
@@ -272,7 +283,7 @@ Every price-state value is transformed by the corporate-action policy on ex-date
   - content hashes of the simulator, source policy, sector map, trading calendar, market-universe policy, cost schedule, tax schedule and portfolio policy;
   - code commit, container image digest, dependency lock hash, engine settings and seed.
 
-  A backtest must declare `holdout_access`; a sealed evaluation must name its holdout-ledger entry. Two runs are "the same run" when every field other than `run_id` and `created_at` is identical.
+  A backtest must declare `holdout_access`; a sealed evaluation must name its holdout-ledger entry. A backtest or replay must declare its `price_read_contract` (§14), and a sealed evaluation must use `exact_per_decision`. Two runs are "the same run" when every field other than `run_id` and `created_at` is identical.
 - **Deterministic engine settings:** aggregations run in a declared, fixed order; values within 1e-9 are treated as ties and broken by market cap, then ISIN; the settings are recorded in the manifest.
 
 ## 14. The canonical point-in-time interface
@@ -300,7 +311,7 @@ This join serves single-row facts. **Multi-period fundamentals** (TTM, three- an
 - **`history_known_as_of(E)`** gives the exact input of one decision at E.
 - **`point_in_time_panel(start, end)`** gives each bar as first known — the version usable at its own date's cutoff, or, for a bar first published after that cutoff, its first version with its real `usable_from`. **`panel_as_of(panel, E)`** is what one decision at E may use from it. Nothing a later decision had is dropped, and nothing it lacked is visible.
 
-A decision sequence built from `history_known_as_of(end)` would let early decisions see later corrections. No module writes its own point-in-time join. The look-ahead canary raises a hard error — not an empty result — when any consumer reads a row whose `usable_from` is after its cutoff.
+They are not equal evidence. `exact_per_decision` (history as known at each decision) is the evidential standard, and the only contract a sealed holdout evaluation may use. `first_known_panel` is look-ahead-free but **information-poorer**: a correction a decision could have known is ignored when the bar was first printed earlier. That is not "conservative": a stale, wrong print can help a strategy as easily as hurt it. Results on the panel are labelled and never used as promotion evidence. A decision sequence built from `history_known_as_of(end)` would let early decisions see later corrections. No module writes its own point-in-time join. The look-ahead canary raises a hard error — not an empty result — when any consumer reads a row whose `usable_from` is after its cutoff.
 
 ## 15. Non-execution boundary, as policy
 
@@ -320,7 +331,7 @@ M11 diffs documents deterministically before M12 sees them. M12 returns structur
 | --- | --- | --- |
 | 0 | Source adapters, XBRL prototype, M1, M2, coverage report, vendor bake-off | Document 02 §17 Stage 0 acceptance |
 | 1 | M3–M6, M5 canary, run manifests (with snapshot persistence), M16 | PIT golden cases; canary hard-fails; M6 equals `reference_features.py` on every feature golden case |
-| 2 | M7, M8, M9a/b, M14, M17 | Reference, card-level and feature golden cases pass unmodified on the production engine; replay reproducibility |
+| 2 | M7, M8, M9a/b, M14, M17 | Reference, card-level, feature and pipeline golden cases pass unmodified on the production engine; replay reproducibility |
 | 3 | M10, M13, M15 | Lifecycle enforcement tests; M15 reconciliation tests; actual-versus-model divergence golden cases (§9); non-execution tests |
 | 4 | Shadow operation | Healthy-silence soak; kill-switch tests; promotion evidence |
 | 5 | M11, M12 | Document 05; prompt-injection and verification tests |
@@ -330,7 +341,7 @@ M11 diffs documents deterministically before M12 sees them. M12 returns structur
 
 | Before… | Controls |
 | --- | --- |
-| **Trusting any warehouse data** | Batch-atomic ingestion and crash recovery, a single writer lock, duplicate-identity failure, a codec-independent store validator, row quarantine (in place from r5.5). The full M2 suite passing on Parquet on the warehouse machine |
+| **Trusting any warehouse data** | Batch-atomic ingestion and crash recovery, a single writer lock, duplicate-identity failure, a codec-independent store validator, row quarantine (in place from r5.5); per-platform durable replace, an OS writer lock that a crash releases, and write-once raw landing (from r5.6). **The full M2 suite, and `run_all.py --require-parquet`, passing on the warehouse machine itself (Windows)**: the Windows code paths are exercised against an emulation elsewhere, which is not evidence that they work on Windows |
 | **Live capture begins** (the scheduled downloader) | `live_capture_start` set in the source policy, so no later file can be back-dated |
 | **Closing Stage 0** | Document 02 corrections from real files. Special-dividend semantics settled. The security-identity table populated from real ISIN changes |
 | **The first calibration or backtest run** | Append-only trial log and lineage holdout enforcement, executable rather than prose. Brinson–Fachler with cash defined, with golden cases (drawdown, rolling-window share and the promotion statistic exist from r5.5). A semantic run-manifest validator deriving each run's full artefact and feature closure. A parent/child identity for multi-date simulations. Every card sizing and construction parameter set (pre-registered). The mutation check green |

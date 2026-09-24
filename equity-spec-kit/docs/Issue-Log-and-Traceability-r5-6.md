@@ -1,14 +1,15 @@
-# Issue Log & Traceability — Releases r5 / r5.1 / r5.2 / r5.3 / r5.4 / r5.5
+# Issue Log & Traceability — Releases r5 / r5.1 / r5.2 / r5.3 / r5.4 / r5.5 / r5.6
 
-*24 September 2026 · every finding from review indices 17–22 and 42–43, the independent assurance audit (F01–F16), Stage 0 (S0.x), the four external reviews of r5.3 (§10) and the independent audit of r5.4 (§12), with its disposition*
+*24 September 2026 · every finding from review indices 17–22 and 42–43, the independent assurance audit (F01–F16), Stage 0 (S0.x), the four external reviews of r5.3 (§10), the independent audit of r5.4 (§12) and the review of r5.5, run on Windows (§13), with its disposition*
 
 **Dispositions:** **Fixed** (where) · **Modified** (adopted with a change; reason given) · **Deferred** (named owner and gate) · **Rejected** (reason) · **Retained** (already correct; kept deliberately).
 
 **Verification.** Every "Fixed" item needs a test that would have caught it:
 
 - **Items the linter can express** get a regression case in `test_speclint.py`.
-- **Items it cannot express** get a golden case, with a planted mutant: `test_golden.py` for simulation and policy, `test_features.py` for feature definitions, `test_card_golden.py` for what a card means.
+- **Items it cannot express** get a golden case, with a planted mutant: `test_golden.py` for simulation and policy, `test_features.py` for feature definitions, `test_card_golden.py` for what a card means, `test_pipeline.py` for what a whole evaluation produces.
 - **Product-code items** get a test in `tests/`.
+- **Portability items** get a check in `tests/test_portability.py` that fails on any OS.
 - **Fixture adequacy** is checked by `mutation_check.py`: a new unexplained survivor is a missing case.
 
 Current counts are in the README. Sections below record history, and cite the revisions current when each finding was made.
@@ -376,3 +377,49 @@ Each finding was reproduced against r5.4 before any change (`audit/repro/` in th
 | R5.16 | Several first-draft feature and card fixtures could not tell a mutant from the original (identical horizons in the ranking case; a cash-conversion coincidence between three and four years) | **Fixed** — found by the planted edits and the mutation check; fixtures changed so each mutant is distinguishable |
 | R5.17 | A no-promoter company had no defined pledge and would have failed `ltqv_v1` G5 | **Fixed** — pledge 0.0 with a `no_promoter` flag; golden F24 |
 | R5.18 | Under pytest, `tests/test_m2.py`'s `test` decorator was collected as a test and errored, and no M2 case ever ran (since r5.3) | **Fixed** — decorator renamed `case`; a `test_m2_suite` entry point runs every case on every available codec |
+
+## 13. Release r5.6 — the review of r5.5, run on Windows
+
+The review ran r5.5 on Windows, the warehouse machine's OS. Eleven of twelve pytest entry points passed there. It found three Windows defects the Linux suite could not see, and a list of P0–P2 items. Every item was verified against r5.5 before any change. Each fix has a test that fails on r5.5, and, for the portability class, a check that fails on Linux too.
+
+**What is certified, and where.** Every contract command passes on Linux under CPython 3.11.15 and 3.12.3, with the pinned dependencies (README, Certification). The Windows code paths run on Linux against an emulation of `kernel32` and `msvcrt`. That emulation catches a Windows-only call on the wrong path, as r5.5's directory fsync would have been caught. It is **not** evidence that the paths work on Windows. The gate before any warehouse data is trusted is `py -3.12 run_all.py --require-parquet` on the Windows machine itself (Doc 01 §17).
+
+**P0 — Windows and the execution contract**
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| W1 | `eos/store.py` fsync-ed the directory after every rename. Windows cannot open a directory, so no warehouse write could succeed there | **Fixed** — `eos/fsio.py` gives each platform its own durable replace. POSIX: `rename`, then fsync the directory. Windows: `MoveFileExW(REPLACE_EXISTING \| WRITE_THROUGH)` through `ctypes`, retrying a sharing violation with bounded backoff, and never opening a directory. Every M2 case runs on both platform paths, with the Windows pass refusing any directory open as Windows does; a write-through case and a sharing-violation case are included |
+| W2 | `mutation_check.py` bounded each mutant with `SIGALRM`, which Windows lacks | **Fixed** — mutants run in worker processes that report one line each; the parent enforces the per-mutant limit by watching for that line, kills a silent worker, counts the hung mutant as detected and resumes after it. No signals; the same survivors as r5.5 (79 of 588, all allowlisted) |
+| W3 | `tests/test_release.py`, and about 50 other `open()` calls, read text in the platform's default encoding (cp1252 on Windows) | **Fixed** — every text-mode `open()` and every text-mode subprocess names UTF-8, and every command writes UTF-8 to stdout. `tests/test_portability.py` checks this three ways. An AST scan fails on any unnamed encoding. Every suite runs under `-X warn_default_encoding -W error::EncodingWarning` with stdout forced to cp1252. Every package text file must be LF-only UTF-8 |
+| W4 | `pytest` was not pinned, and was absent on the review machine | **Fixed** — `requirements-dev.txt` pins PyYAML 6.0.3, pyarrow 25.0.1 and pytest 9.1.1; `run_all.py` runs every contract command with the current interpreter on any OS |
+| W5 | The README claimed portability it had not tested | **Fixed** — the README's Certification section states exactly what ran where, and names the Windows run as outstanding. The repository's `.gitattributes` (`* -text`) prevents line-ending conversion, and `make_manifest.py --verify` names a CRLF conversion when it finds one |
+
+**P1 — semantics, evidence and the warehouse**
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| R1 | Muhurat semantics: the registry said its bars were "not used", Doc 02 said it was not executable, and neither said it is a real trading session | **Fixed** — registry `session_policy` 1.0.0, a stated platform choice. Muhurat trades and is stored; only `normal` sessions are executable, so muhurat is never a unit, never evaluated and never filled in. Its move falls in the next executable return. `weekly_sessions` reads `session_type`; goldens C27–C27d; Doc 01 §7, Doc 02 §3 |
+| R2 | An unrankable security reached the model portfolio: `construct` admitted missing ranks after the ranked ones whenever capacity was spare. Material inputs that feed only the ranking could never block | **Fixed** — evaluation semantics 1.1.0. An unrankable security is not a candidate, and `construct` refuses one. Ranking inputs resolve by their unknown behaviour, so a missing material input means no rank. The compiler requires `min_inputs_known` to cover every material composite input; `ltqv_v1`'s quality composite now needs all five. Goldens C25c, C29–C29g, C30, P3 |
+| R3 | Confidence counted a conflicted penalised input twice and ignored a conflicted material ranking input, although the policy names "conflicted input used for ranking" | **Fixed** — one band per feature: a penalised input not known, or a conflicted input used in ranking. Conflicted inputs rank with their primary value. Confidence changes neither candidacy nor the model portfolio. Goldens C20c–f, P1, P4 |
+| R4 | No golden case ran a population through to the published claims | **Fixed** — `reference_engine.run_pipeline` (universe → filters → ranking → gates → size checks → capacity → quantities → publication) with `golden/pipeline_cases.yaml`, P1–P4 worked by hand, and seven planted defects, including every r5.5 behaviour above, each caught. The publication rule is now normative: what is recommended is what the model portfolio measured (Doc 01 §7) |
+| R5 | Card closures were too broad. Adding a weekday re-pinned both cards, and editing `valuation_transformative_actions` re-pinned `mom_v1`, which never reads it | **Fixed** — a closure holds the enums its expressions and enum-typed features use, the blocks its features declare in `depends_on`, and scoring only for ranking cards. Tests: a new weekday, horizon or status leaves both pins. The transformative-actions edit re-pins `ltqv_v1` only. A new surveillance stage or session policy re-pins both. A scoring edit spares a gate-only card |
+| R6 | Lifecycle records were ordered by the `decided_at` string. The two r5.5 records carried a hand-typed time that was in the future when they were committed, and a "for Harsh to confirm" author that was never confirmed | **Fixed** — records are ordered by instant; a missing offset, a tie, a record filed out of order and a future time are errors; `register_card.py` stamps the real time and refuses a bad `--at`. The two r5.5 records are **withdrawn**: no run ever used them, and their card versions no longer exist. Both cards are re-pinned to registry 3.1.0 as `1.0.0-prevalidation.9` and registered at the real time by the r5.6 build. If you would rather register them under your own name, retire these records and register afresh |
+| R7 | A crash left the O_EXCL writer lock behind, blocking every later ingestion until someone deleted it by hand | **Fixed** — an OS lock (`flock` / `msvcrt.locking`) that the OS releases when the holder dies; the lock file is never deleted. Test: a child process holding the writer is killed, and the parent then ingests |
+| R8 | There was no immutable raw landing layer: ingestion parsed the download folder in place | **Fixed** — every file is landed write-once and content-addressed under `_raw/` before parsing. Parsing reads the landed copy, and a `raw_file` row commits with the observations (Doc 02 §12). Tests: bytes preserved exactly; a later change to the original affects nothing; re-landing is a no-op; a tampered landed file is refused |
+| R9 | Exact per-decision reads and the first-known panel were presented as equally valid, and the panel was called "conservative" | **Fixed** — the run manifest's `price_read_contract` is required for backtests and replays. The sealed holdout must use `exact_per_decision` (schema-enforced). The panel is described as information-poorer, not conservative, and panel results are never promotion evidence (Doc 02 §6, Doc 04 §7) |
+
+**P2**
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| Q1 | A constant design series divided the Newey–West t-statistic by zero | **Fixed** — `nw_tstat` returns None below a 1e-12 standard error; the decision reports `degenerate: true` and fails; goldens G32g–i |
+| Q2 | `START-HERE.md` said it "wins" over everything else | **Fixed** — it is the status and handover note. On what the system is and does, the manifest-bound package controls (Doc 01 §2) |
+| Q3 | The audit's reproduction scripts were not bound to any release and used `SIGALRM` | **Fixed** — `audit/README.md` labels them as non-controlling history, written for r5.4 and Unix-only. The package's own checks (`run_all.py`) are what verify a release |
+
+**Found while fixing (not in the review)**
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| F1 | `mutation_check.py` mutates `reference_sim.py` and `reference_features.py` only. A trial on `reference_engine.py`, including the `Engine` methods (87 sites), against the card and pipeline goldens left 22 survivors. Some are likely equivalent (defensive guards, rounding of a reported value); others are boundary cases no golden pins yet | **Deferred** — owner Claude; gate: before the first calibration or backtest run (Doc 01 §17), when the mutation check must be green. Add `reference_engine` to the check with class methods included, add goldens for the real gaps and allowlist the reviewed equivalents |
+| F2 | A composite's `min_inputs_known` could be set below its number of material inputs, which let a card rank on a different formula when material data was missing (this is how R2 reached `ltqv_v1`) | **Fixed** — a compiler rule (Doc 01 §8); `ltqv_v1`'s quality composite set to 5 of 5 |
+

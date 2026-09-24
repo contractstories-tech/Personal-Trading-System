@@ -1,4 +1,4 @@
-# Feature & identifier registry - Document 02 r5, Appendix A
+# Feature & identifier registry - Document 02 r6, Appendix A
 # 3.0.0 (r5.5, the Stage 0 re-pin): cards pin the canonical hash of the registry entries they use (their
 # closure), not this whole file; every entry carries its own version; evaluation semantics are normative
 # and versioned; `substitute` and `next_executable_session` are removed; cutoffs are typed timestamp;
@@ -101,7 +101,7 @@ window_conventions:
   stdev: "sample standard deviation (divisor n-1) for volatility; population (divisor N) for z-scores and roce_stability"
   median: "even count: mean of the two middle values"
 
-# ------------------------------------------------------------------ sessions (normative platform policy; Doc 02 s4)
+# ------------------------------------------------------------------ sessions (normative platform policy; Doc 02 s3)
 session_policy:
   version: 1.0.0
   trading_session_types: [normal, muhurat]      # NSE trades in these; their bars are real and are stored

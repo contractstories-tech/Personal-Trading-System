@@ -269,19 +269,19 @@ equivalent_mutants:
 - module: reference_sim
   function: promotion_decision
   kind: cmp
-  line: '"pass": t >= h and mu_h > 0 and consistent}'
+  line: 'design_pass = t is not None and t >= h          # an undefined statistic never passes (degenerate design)'
   count: 1
-  reason: exact float equality at the boundary (t = hurdle; mean = design mean - 2 SE) is not representable
+  reason: exact float equality at the boundary (t = hurdle) is not representable (r5.6 moved the t >= h test here from the two lines it had)
+- module: reference_sim
+  function: nw_tstat
+  kind: cmp
+  line: 'if se <= DEGENERATE_SE:'
+  count: 1
+  reason: '<= vs < differs only for a series whose Newey-West SE is exactly 1e-12 in floating point, which no finite golden series produces; both sides of the threshold are pinned by G32g-i (SE 0 and SE ~2.5e-5)'
 - module: reference_sim
   function: promotion_decision
   kind: cmp
   line: consistent = mu_h >= mu_d - 2 * se_h
-  count: 1
-  reason: exact float equality at the boundary (t = hurdle; mean = design mean - 2 SE) is not representable
-- module: reference_sim
-  function: promotion_decision
-  kind: cmp
-  line: 'return {"design_t": round(t, 6), "hurdle": round(h, 6), "design_pass": t >= h, "holdout_positive": mu_h > 0,'
   count: 1
   reason: exact float equality at the boundary (t = hurdle; mean = design mean - 2 SE) is not representable
 - module: reference_sim

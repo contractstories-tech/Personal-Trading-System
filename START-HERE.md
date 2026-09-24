@@ -1,8 +1,8 @@
 # START HERE — Equity Opportunity System
 
-*Living handover document. Updated by Claude at the end of every working session. If this file and anything else disagree about where the project stands, this file wins.*
+*Living handover document, updated by Claude at the end of every working session. It records where the project stands: status, decisions, open items and the next step. It sits outside the controlling package and controls nothing in it. On what the system is and does, the files bound by the package's `MANIFEST.json` control. If this file disagrees with them, the package is right and this file is out of date.*
 
-**Last updated:** 24 September 2026 · **Current release:** r5.5 · **Current phase:** Stage 0 — the audit of r5.4 resolved in r5.5; S1b waits for real NSE sample files
+**Last updated:** 24 September 2026 · **Current release:** r5.6 · **Current phase:** Stage 0. The review of r5.5 (run on Windows) is resolved in r5.6. **Next: run r5.6 on the Windows warehouse machine.** S1b waits for real NSE sample files
 
 ---
 
@@ -81,61 +81,89 @@ The project went through a deliberate sequence. Each step exists because the one
    - **A codec-independent store**, a lossless point-in-time panel, a backfill guard and row quarantine.
    - **A mutation check** on fixture adequacy.
 
+13. **Review of r5.5, run on Windows (24 Sep).** Eleven of twelve pytest entry points passed on Windows. It found three Windows defects the Linux suite could not see: a directory fsync that makes every warehouse write fail on Windows, `SIGALRM` in the mutation check, and text read in the platform's default encoding. Its other findings:
+   - muhurat semantics;
+   - an unrankable security reaching the model portfolio;
+   - confidence counting the wrong inputs;
+   - no end-to-end goldens;
+   - closures too broad;
+   - lifecycle times compared as strings, including a future timestamp Claude had typed into the r5.5 records;
+   - a stale lock after a crash;
+   - no raw landing layer;
+   - the panel presented as equal evidence;
+   - a zero-variance crash;
+   - authority wording;
+   - unbound audit scripts.
+
+   All were verified against r5.5 and all have merit.
+14. **r5.6 — every finding of that review resolved, each with a test that fails on r5.5** (Issue Log §13).
+   - **Warehouse:** per-platform durability (`MoveFileExW` write-through on Windows), an OS writer lock a crash releases, and write-once raw landing.
+   - **Portability:** explicit UTF-8 throughout; a signal-free mutation check; pinned dev dependencies; one cross-platform `run_all.py`; portability regressions.
+   - **Semantics:** evaluation semantics 1.1.0 (unrankable is never a candidate, confidence once per feature, a publication rule) and a muhurat session policy.
+   - **Evidence and records:** end-to-end pipeline goldens; narrower closures; lifecycle ordered by instant; a degenerate promotion statistic that never passes; exact reads as the evidential standard.
+
 Full history, with the disposition of every finding, is in the Issue Log.
 
 ## 3. Current state
 
-**Specification:** r5.5. The audit of r5.4 is dispositioned in Issue Log §12. The single Stage 0 registry re-pin is done. Everything not yet fixed is scheduled to the phase where it first matters: **Document 01 §17** is the phase matrix.
+**Specification:** r5.6. The review of r5.5 is dispositioned in Issue Log §13, and the audit of r5.4 in §12. Everything not yet fixed is scheduled to the phase where it first matters: **Document 01 §17** is the phase matrix.
 
-**Product code:** Stage 0 slice S1, M2 price ingestion, in `eos/`. It was hardened in r5.4, then made codec-independent in r5.5, with row quarantine, a backfill guard and a lossless panel. Its full suite passes on Parquet (`pyarrow` 25.0.1, tested on Python 3.11).
+**Product code:** Stage 0 slice S1, M2 price ingestion, in `eos/`. It was hardened in r5.4, made codec-independent in r5.5, and given in r5.6 per-platform durability, a crash-safe OS writer lock and write-once raw landing. Its full suite passes on Linux on both codecs, and on the Windows code paths under emulation.
 
-**Executable references:** `reference_sim.py` (simulation, tax, corporate actions, promotion statistics), `reference_features.py` (every feature a card reads) and `reference_engine.py` (what a card means). The production M5–M7 and M14 must reproduce all three.
+**Executable references:**
+
+- `reference_sim.py`: simulation, tax, corporate actions, promotion statistics.
+- `reference_features.py`: every feature a card reads.
+- `reference_engine.py`: what a card means, and `run_pipeline`, what a whole evaluation produces.
+
+The production M5–M7 and M14 must reproduce them.
 
 **What S1 has not yet touched:**
 
+- **Nothing has run on Windows yet.** The warehouse machine runs Windows. r5.6's Windows paths (`MoveFileExW`, `msvcrt` locking) have run only against an emulation on Linux. `py -3.12 run_all.py --require-parquet` on that machine is the next gate.
 - **No real exchange file has been parsed.** The parsers follow the documented layouts. They fail loudly on any header they don't recognise, and quarantine a defective row.
-- **Parquet has not yet run on the warehouse machine.**
 - **`band_close_state` is deliberately not built** until a real band file settles its semantics.
 - **Reissue and deletion semantics (B10)**, and how a genuine no-trade row is stored, await real files.
 
-**Package health at r5.5:** every command in the README's execution contract passes from a clean unzip.
+**Package health at r5.6:** every command in the README's execution contract passes on Linux, under CPython 3.11.15 and 3.12.3, with the pinned dependencies (README, Certification).
 
-- `test_speclint.py`: 115 linter cases, and 2,004 malformed cards with zero crashes.
+- `test_speclint.py`: 118 cases, 2,004 malformed cards and no crash.
 - `speclint.py`: both cards compile, as `experimental` per their lifecycle records.
-- `test_golden.py`: 143 reference golden cases; 42 of 42 planted defects caught.
-- `test_features.py`: 152 feature golden cases; 14 of 14 planted defects caught; every card-read feature covered.
-- `test_card_golden.py`: 52 card-level cases; 12 of 12 planted card edits caught.
-- `tests/test_m2.py`: 45 M2 cases on both codecs.
-- `mutation_check.py`: 588 mutation sites, 87% killed, every survivor reviewed as equivalent.
-- `tests/test_manifest.py` and `tests/test_release.py`: manifest and release consistency, now including every document's release line and every section reference.
+- `test_golden.py`: 146 golden cases; 42 of 42 planted defects caught.
+- `test_features.py`: 152 feature cases; 14 of 14 planted defects caught; every card-read feature covered.
+- `test_card_golden.py`: 68 card cases; 12 of 12 planted card edits caught.
+- `test_pipeline.py`: 4 end-to-end cases; 7 of 7 planted defects caught.
+- `tests/test_m2.py`: 50 cases × 2 codecs × 2 platform paths (POSIX, Windows emulated) = 200 runs.
+- `tests/test_portability.py`: 4 checks (static, bytes, CRLF naming, every suite under strict encoding).
+- `mutation_check.py`: 589 mutation sites in `reference_sim.py` and `reference_features.py`, 87% killed, every survivor a reviewed equivalent.
 
 ## 4. The controlling package
 
 The files bound by `MANIFEST.json` in the latest `equity-spec-kit-rX.Y.zip` are controlling. Everything else is history, including older revisions and any editable copy.
 
-**Current package: `equity-spec-kit-r5.5.zip`** (digest in its `MANIFEST.json`). In the working repository, `equity-spec-kit/` is the same package, unzipped.
+**Current package: `equity-spec-kit-r5.6.zip`** (digest in its `MANIFEST.json`). In the working repository, `equity-spec-kit/` is the same package, unzipped.
 
 **Upload the zip itself to the project**, and remove the older loose files and zips.
 
 The `.docx` copies of the documents are not updated per release; the `.md` files in the zip control.
 
-At r5.5:
+At r5.6:
 
 | Artefact | Revision |
 | --- | --- |
-| Overview | v5.5 |
-| Document 01 — Core Platform Architecture | r8 (evaluation semantics §7; phase matrix §17) |
-| Document 02 — Data Contract & Canonical Schema | r5 |
-| Document 03 — Strategy Pack (card sections generated from YAML) | r7 |
-| Document 04 — Validation Protocol | r4 |
-| Issue Log & Traceability | r5.5 |
-| Stage 0 Plan | r5.5 |
+| Overview | v5.6 |
+| Document 01 — Core Platform Architecture | r9 (evaluation semantics §7; phase matrix §17) |
+| Document 02 — Data Contract & Canonical Schema | r6 (session policy §3; read contracts §6; raw landing and durability §12) |
+| Document 03 — Strategy Pack (card sections generated from YAML) | r8 |
+| Document 04 — Validation Protocol | r5 |
+| Issue Log & Traceability | r5.6 |
+| Stage 0 Plan | r5.6 |
 | `policies/source_policy.yaml` | 1.2.0 (backfill guard, quarantine limit) |
-| `registry.yaml` | 3.0.0 (every entry versioned) |
-| `strategies/ltqv_v1.yaml`, `strategies/mom_v1.yaml` | 1.0.0-prevalidation.8, schema v6, registered `experimental` |
+| `registry.yaml` | 3.1.0 (evaluation semantics 1.1.0, session policy 1.0.0; every entry versioned) |
+| `strategies/ltqv_v1.yaml`, `strategies/mom_v1.yaml` | 1.0.0-prevalidation.9, schema v6, registered `experimental` by the r5.6 build at the real time |
 | `eos/` product code | Stage 0 slice S1 |
 
-**Authority order:**
+**Authority order** (all inside the package; this file and `audit/` are outside it and control nothing):
 
 1. The YAML cards are the only executable source of a strategy; their meaning is fixed by `reference_engine.py` and the card-level goldens.
 2. `registry.yaml` owns every definition and the evaluation semantics.
@@ -143,9 +171,9 @@ At r5.5:
 4. Document 02 governs data; Document 01 architecture; Document 04 validation.
 5. Document 03 explains and is generated. Where prose and YAML disagree, YAML wins.
 
-**Verify before trusting.** Every command in the README's execution contract must exit 0.
+**Verify before trusting.** `python run_all.py` runs every command in the README's execution contract; all must exit 0.
 
-On the machine that holds the warehouse, `python3 tests/test_m2.py --require-parquet` must also pass.
+On the machine that holds the warehouse (Windows), `py -3.12 run_all.py --require-parquet` must also pass. Until it does, the Windows paths are untested on Windows.
 
 ## 5. Decisions already made — do not silently revisit
 
@@ -178,6 +206,11 @@ On the machine that holds the warehouse, `python3 tests/test_m2.py --require-par
 | **Exits fire when a thesis input turns out-of-domain in the failing direction**, using Kleene logic otherwise *(r5.5, audit A2; per-exit `on_out_of_domain: review` available)* | A collapsing holding must be sold, not held behind a review flag |
 | **Promotion needs a Newey–West t above a hurdle that rises with logged trials**, and a holdout consistent with design *(r5.5, audit B7)* | Sign-only tests passed about 1 in 5 zero-alpha strategies |
 | **Gate, exit, filter and flag inputs are quantised to 9 dp, then compared in Decimal** *(r5.5, audit C2)* | Floating-point summation order must not flip a decision |
+| **Muhurat is a real trading session that the platform does not execute in or count** *(r5.6, registry `session_policy`; a policy choice, changeable only by a new policy version)* | One explicit rule instead of two contradictory sentences |
+| **An unrankable security is never a candidate; a missing material ranking input means no rank** *(r5.6, evaluation semantics 1.1.0)* | Otherwise spare capacity admits securities the card could not score |
+| **A claim is published only if the model portfolio takes it** (size checks at model size, capacity) and its confidence is at least medium; confidence never changes what the model holds *(r5.6)* | What is recommended must be what is measured |
+| **Promotion evidence comes only from exact per-decision reads**; the first-known panel is exploration *(r5.6)* | The panel ignores corrections a decision could have known |
+| **The warehouse machine is Windows**, and the Windows paths count as tested only when run there *(r5.6)* | Emulation proves the branch is taken, not that Windows behaves as modelled |
 
 ## 6. What is open
 
@@ -193,10 +226,10 @@ On the machine that holds the warehouse, `python3 tests/test_m2.py --require-par
 **Harsh's actions for Stage 0:**
 
 - Download batch 1 of NSE sample files (Stage 0 Plan §5; about 25–30 files) and upload them unaltered. Never re-save them in Excel.
-- Set up the warehouse machine: Python 3.12, `PyYAML==6.0.3`, `pyarrow==25.0.1`, and run `python3 tests/test_m2.py --require-parquet`.
-- Upload `equity-spec-kit-r5.5.zip` itself to the project.
-- Confirm or amend the two lifecycle records that register both cards as `experimental`. Claude wrote them in the r5.5 re-pin with `decided_by` marked for your confirmation, declaring that no sealed holdout result has been seen.
-- Object, if you wish, to any r5.5 default in §5.
+- **Run r5.6 on the Windows warehouse machine:** unzip `equity-spec-kit-r5.6.zip`; `py -3.12 -m pip install -r requirements-dev.txt`; `py -3.12 run_all.py --require-parquet`. Send back `run_all.log` if anything fails.
+- Upload `equity-spec-kit-r5.6.zip` itself to the project.
+- **Confirm or replace the two lifecycle records** that register both `.9` cards as `experimental`. The r5.6 build wrote them at the real time, on your instruction to make the review's changes, declaring that no sealed holdout result has been seen. The r5.5 records, which carried a hand-typed future time, are withdrawn (Issue Log §13, R6).
+- Object, if you wish, to any r5.5 or r5.6 default in §5.
 - **Recommended: take `mom_v1` end-to-end through validation before the XBRL-heavy `ltqv_v1` work.** It needs only exchange files and exercises the whole chain.
 
 **Facts only Stage 0 can establish:**
@@ -230,14 +263,16 @@ Supporting documents still to write: Document 07 (build, release and operations 
 
 ## 8. The immediate next step
 
-**S1b: M2 on real files.** It starts when batch 1 is uploaded (Stage 0 Plan §5).
+**First: r5.6 on Windows.** `py -3.12 run_all.py --require-parquet` on the warehouse machine. Every failure there is a real finding: fix it with a test, and never loosen the check.
+
+**Then S1b: M2 on real files.** It starts when batch 1 is uploaded (Stage 0 Plan §5).
 
 1. Run every batch-1 file through the parsers. Correct each parser to the real layout, and turn each real file into a fixture with hand-checked values. Every correction gets a test that would have caught it.
 2. Settle the price-band file's semantics, then build `band_close_state` with golden cases.
 3. Settle reissue semantics, adding tombstones if a reissue is a complete snapshot (B10).
 4. Decide how a genuine no-trade row is stored. Quarantine already stops one such row from rejecting the day. Calibrate `max_quarantine_share` on the real files.
 5. Take the first readings of archive depth and publication times. Those readings move `inferred_basis` from `unverified` to `measured` where live capture allows.
-6. On the warehouse machine, run `tests/test_m2.py --require-parquet`. **Warehouse data is not trusted until it passes.**
+6. On the warehouse machine, run `py -3.12 run_all.py --require-parquet`. **Warehouse data is not trusted until it passes.**
 7. When the scheduled downloader starts live capture, set `backfill.live_capture_start` in the source policy.
 
 **If batch 1 is delayed,** S2 can start on synthetic data: the trading calendar, `security_lineage` across ISIN changes, the corporate-action arithmetic, the share-count seed, and the special-dividend threshold (H1).
@@ -267,6 +302,7 @@ Each slice ends with passing tests, an updated package, and an updated START-HER
 
 | Date | Release | Change |
 | --- | --- | --- |
+| 24 Sep 2026 | r5.6 | Review of r5.5 (run on Windows) resolved: Windows durability and OS lock, raw landing, UTF-8 throughout, signal-free mutation check, `run_all.py`, evaluation semantics 1.1.0, session policy, pipeline goldens, narrower closures, lifecycle instants, degenerate promotion statistic, read-contract evidence labels. Authority wording corrected: the package controls, this file reports status |
 | 24 Sep 2026 | r5.5 | Independent audit of r5.4 resolved: reference card engine and card-level goldens, evaluation semantics, construction and scale, closure pinning and lifecycle records, feature library, promotion hurdle, M2 fixes, mutation check |
 | 23 Sep 2026 | r5.2 | Created as the living handover at the end of the specification phase |
 | 24 Sep 2026 | r5.4 | Correction release: review findings that need no real data fixed with tests; three defects found while fixing; documents made consistent and checked automatically |
