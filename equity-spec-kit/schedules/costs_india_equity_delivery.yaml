@@ -2,8 +2,9 @@
 # status: verified = confirmed from current sources at drafting (21 Sep 2026)
 #         confirm_contract_note = plausible, must be confirmed against a real contract note at Stage 0
 #         historical_estimate = pre-period approximation; small effect; verify at Stage 0
-schedule_version: 1.0.0
+schedule_version: 1.1.0
 rounding: "each component rounded to the paisa; GST base uses rounded components"
+rounding_note: "contract notes commonly round STT to the nearest rupee; the Stage 0 contract-note reconciliation decides whether STT rounds to the rupee (audit D3)"
 components:
   stt:
     - {from: 2008-06-01, to: 2013-05-31, buy: 0.00125, sell: 0.00125, status: historical_estimate}
@@ -22,8 +23,12 @@ components:
     - {from: 2008-06-01, to: null, rate: 0.000001, status: verified, note: "Rs 10 per crore"}
   gst:
     - {from: 2017-07-01, to: null, rate: 0.18, base: [brokerage, exchange_txn_nse, sebi_turnover_fee], status: verified}
-    - {from: 2008-06-01, to: 2017-06-30, rate: 0.15, base: [brokerage, exchange_txn_nse, sebi_turnover_fee], status: historical_estimate,
-       note: "service tax before GST"}
+    # service tax before GST, with education cesses and Swachh/Krishi Kalyan cesses (1.1.0; audit D3)
+    - {from: 2016-06-01, to: 2017-06-30, rate: 0.15,   base: [brokerage, exchange_txn_nse, sebi_turnover_fee], status: historical_estimate}
+    - {from: 2015-11-15, to: 2016-05-31, rate: 0.145,  base: [brokerage, exchange_txn_nse, sebi_turnover_fee], status: historical_estimate}
+    - {from: 2015-06-01, to: 2015-11-14, rate: 0.14,   base: [brokerage, exchange_txn_nse, sebi_turnover_fee], status: historical_estimate}
+    - {from: 2012-04-01, to: 2015-05-31, rate: 0.1236, base: [brokerage, exchange_txn_nse, sebi_turnover_fee], status: historical_estimate}
+    - {from: 2008-06-01, to: 2012-03-31, rate: 0.103,  base: [brokerage, exchange_txn_nse, sebi_turnover_fee], status: historical_estimate}
 broker_profiles:
   flat_20:        {brokerage_per_order: 20.0, dp_charge_per_sell_scrip_day: 13.5, note: "conservative default"}
   zero_delivery:  {brokerage_per_order: 0.0,  dp_charge_per_sell_scrip_day: 13.5}

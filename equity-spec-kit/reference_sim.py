@@ -138,12 +138,13 @@ def tax_view(disposals, schedule, fy_start_year):
 
 
 # ------------------------------------------------------------------ stop state machine (Doc 01 s11)
-def run_stop(entry_fill, atr_at_entry, sessions, mult=2.5):
+def run_stop(entry_fill, atr_at_signal, sessions, mult=2.5):
     """sessions: [{close, atr_pct}] STARTING WITH THE FILL SESSION - the position exists at that
     close, so the stop is tested there too. Test-then-update; strict-greater peak rule; ATR frozen
-    at the peak. Returns per-session stop tested, and the exit session index or None."""
-    stop = entry_fill * (1 - mult * atr_at_entry)
-    peak, atr_peak = entry_fill, atr_at_entry
+    at the peak. The initial stop uses ATR at the SIGNAL (r5.5, audit C3), so it is known before the
+    order and the risk budget holds at any permitted fill. Returns stops tested and exit index or None."""
+    stop = entry_fill * (1 - mult * atr_at_signal)
+    peak, atr_peak = entry_fill, atr_at_signal
     tested = []
     for i, s in enumerate(sessions):
         tested.append(round(stop, 4))
@@ -203,11 +204,28 @@ def demerger(parent_qty, p_cum, p_discovered, ratio):
 
 
 def rights_value(held, a, b, S, p_cum, re_listed_close=None):
+    """Entitlements are whole (fractions ignored). Unlisted entitlements are valued at max(0, TERP - S): TERP is
+    known before trading and deterministic (audit C4: r5.4 prose said P_ex, which was undefined, while this
+    function used TERP)."""
     terp = (b * p_cum + a * S) / (a + b)
     f = terp / p_cum if S < p_cum else 1.0
-    ent = held * a / b
+    ent = math.floor(held * a / b + 1e-9)
     per = re_listed_close if re_listed_close is not None else max(0.0, terp - S)
     return {"terp": round(terp, 4), "f": round(f, 6), "entitlements": ent, "value": round(ent * per, 2)}
+
+
+def carry_isin_change(position, f, new_isin, p_cum):
+    """Security identity (audit B1): a face-value change that allots a new ISIN continues the same security_id.
+    Quantity / f (fraction as cash in lieu at the post-action price), price state x f; holding-period dates,
+    cooldowns and holding_days carry unchanged."""
+    out = split_bonus(position["qty"], position["price_state"], f, p_cum)
+    return {**position, "isin": new_isin, "qty": out["qty"], "price_state": out["price_state"],
+            "cash_in_lieu": out["cash_in_lieu"]}
+
+
+def stitch_across_isin(closes_old, closes_new, f):
+    """One adjusted series for the security_id: the old ISIN's closes x f, then the new ISIN's closes."""
+    return [round(c * f, 4) for c in closes_old] + list(closes_new)
 
 
 # ------------------------------------------------------------------ features and scoring
@@ -240,16 +258,24 @@ def zscores(values, direction="higher_better", min_n=30):
     return [UNKNOWN if v is UNKNOWN else sign * (clip(v) - mean) / sd for v in values]
 
 
-def roce(ebit, equity, borrowings, leases, cash, total_assets, prior_ce):
+def roce(ebit, equity, borrowings, leases, cash, total_assets, prior_ce, prior_total_assets):
+    """registry roce_rule (audit B6). The cash-rich cap is tested on the AVERAGE capital employed actually used as
+    the denominator, applies only to a business with positive underlying EBIT, and every value is capped at 1.00.
+    r5.4 gave a loss-making cash shell 1.00, a company leaving net cash 6.00, and one with negative prior CE -1.20."""
     if equity <= 0:
         return {"state": "out_of_domain", "outcome": "fail"}
     ce = equity + borrowings + leases - cash
-    if ce <= 0.05 * total_assets:
-        return {"state": "known", "value": 1.0, "cash_rich_capped": True}
-    return {"state": "known", "value": round(ebit / ((ce + prior_ce) / 2), 6), "cash_rich_capped": False}
+    ce_avg, ta_avg = (ce + prior_ce) / 2, (total_assets + prior_total_assets) / 2
+    if ce_avg <= 0.05 * ta_avg:
+        if ebit <= 0:
+            return {"state": "out_of_domain", "outcome": "fail"}
+        return {"state": "known", "value": 1.0, "cash_rich_capped": True, "capped": True}
+    v = ebit / ce_avg
+    return {"state": "known", "value": round(min(v, 1.0), 6), "cash_rich_capped": False, "capped": v > 1.0}
 
 
 def cfo_pat(sum_cfo, sum_pat):
+    """sum_pat <= 0 (including exactly 0) is out of domain: negative over negative is not good conversion."""
     if sum_pat <= 0:
         return {"state": "out_of_domain", "outcome": "fail"}
     return {"state": "known", "value": round(sum_cfo / sum_pat, 6)}
@@ -305,11 +331,38 @@ def asof_domain(rows, isin, domain, cutoffs):
     return max(c, key=lambda r: r["usable_from"]) if c else None
 
 
-def asof_with_basis_fallback(rows, isin, cutoff, company_files_consolidated):
-    """Consolidated is used when the company files it at all; standalone is a fallback only for
-    companies that file no consolidated statements - never a per-date substitution."""
-    basis = "consolidated" if company_files_consolidated else "standalone"
-    return asof(rows, isin, basis, cutoff)
+# ------------------------------------------------------------------ fundamentals as of a cutoff (audit B5)
+def period_panel_as_of(facts, isin, basis, cutoff):
+    """{(fact, period_end): value} using, for EACH period, its latest version usable at the cutoff.
+    facts: [{isin, basis, fact, period_end, version, usable_from, value}]. A restatement of an old period that
+    arrives after a newer period was filed replaces that old period only; it never becomes 'the latest row'."""
+    best = {}
+    for r in facts:
+        if r["isin"] != isin or r["basis"] != basis or r["usable_from"] > cutoff:
+            continue
+        k = (r["fact"], r["period_end"])
+        if k not in best or r["version"] > best[k]["version"]:
+            best[k] = r
+    return {k: r["value"] for k, r in best.items()}
+
+
+def basis_for_window(facts, isin, cutoff, periods, fact="revenue"):
+    """The basis for a multi-period feature, decided AS OF THE CUTOFF: consolidated if consolidated figures usable
+    at the cutoff exist for every period of the window; standalone if none of them has consolidated figures;
+    None (missing) if the window mixes bases. r5.4 took a timeless 'company files consolidated' boolean, which
+    applies today's knowledge to history."""
+    cons = period_panel_as_of(facts, isin, "consolidated", cutoff)
+    have = [(fact, p) in cons for p in periods]
+    if all(have):
+        return "consolidated"
+    if not any(have):
+        return "standalone"
+    return None
+
+
+def latest_period(panel, fact):
+    ends = [p for (f, p) in panel if f == fact]
+    return max(ends) if ends else None
 
 
 # ------------------------------------------------------------------ sizing bound (r5.2)
@@ -372,7 +425,7 @@ def tax_multi_year(years, schedule, carry_in=None):
     return _tax_multi_year(years, schedule, carry_in)
 
 
-def _tax_multi_year(years, schedule, carry_in=None, _expire=True, _st_carry_as_lt=False):
+def _tax_multi_year(years, schedule, carry_in=None, _expire=True, _st_carry_as_lt=False, _exempt_before_setoff=False):
     life = schedule["set_off"]["carry_forward_years"]
     vint = [dict(v) for v in (carry_in or [])]
     out = []
@@ -383,6 +436,9 @@ def _tax_multi_year(years, schedule, carry_in=None, _expire=True, _st_carry_as_l
         buckets = tax_year(y["disposals"], schedule)
         st = sum(b["st"] for b in buckets.values())
         lt = sum(b["lt"] for b in buckets.values())
+        if _exempt_before_setoff:          # planted defect only (R5.9): exemption taken off the gross gain first
+            ex0 = _regime(schedule, dt.date(fy + 1, 3, 31)).get("ltcg_exemption_per_fy") or 0
+            lt = max(lt - ex0, 0.0) if lt > 0 else lt
         if st < 0 < lt:                                            # current-year ST loss against LT gain
             use = min(-st, lt)
             st, lt = st + use, lt - use
@@ -451,12 +507,46 @@ def turnover(total_traded_value, average_portfolio_value, years):
     return total_traded_value / 2 / average_portfolio_value / years
 
 
-def rolling_windows(monthly_returns, window=36, step=1):
-    out = []
-    for i in range(0, len(monthly_returns) - window + 1, step):
-        w = monthly_returns[i:i + window]
-        out.append((1 + sum(w) / len(w)) ** 12 - 1)
-    return out
+def rolling_alpha_share(monthly_excess, window=36):
+    """Doc 04 s11: 36-month windows stepped monthly, equally weighted; the share with positive alpha
+    (mean monthly excess > 0). r5.4 shipped rolling_windows(), which returned annualised returns instead."""
+    wins = [monthly_excess[i:i + window] for i in range(0, len(monthly_excess) - window + 1)]
+    return sum(1 for w in wins if sum(w) / len(w) > 0) / len(wins) if wins else None
+
+
+def max_drawdown(values):
+    """Peak-to-trough of a value series, as a positive fraction of the peak."""
+    peak, worst = values[0], 0.0
+    for v in values:
+        peak = max(peak, v)
+        worst = max(worst, (peak - v) / peak)
+    return worst
+
+
+def nw_tstat(series, lag):
+    return (sum(series) / len(series)) / newey_west_se(series, lag)
+
+
+def promotion_hurdle(n_trials, alpha=0.05):
+    """Two-sided Bonferroni hurdle on the design-period Newey-West t-statistic, scaled by the trial log's count of
+    design trials for the lineage (Doc 04 s12; audit B7): 1 trial -> 1.96, 5 -> 2.58, 20 -> 3.02."""
+    from statistics import NormalDist
+    return NormalDist().inv_cdf(1 - alpha / (2 * max(1, n_trials)))
+
+
+def promotion_decision(design_excess, holdout_excess, n_trials, lag=6):
+    """The pre-registered statistical part of experimental -> shadow (Doc 04 s12). Design: NW t >= hurdle.
+    Holdout: mean excess > 0 AND not below the design mean by more than 2 holdout NW standard errors.
+    Reports the minimum detectable annualised alpha at the design sample's precision."""
+    t = nw_tstat(design_excess, lag)
+    h = promotion_hurdle(n_trials)
+    se_d = newey_west_se(design_excess, lag)
+    mu_d, mu_h = sum(design_excess) / len(design_excess), sum(holdout_excess) / len(holdout_excess)
+    se_h = newey_west_se(holdout_excess, min(lag, len(holdout_excess) - 1))
+    consistent = mu_h >= mu_d - 2 * se_h
+    return {"design_t": round(t, 6), "hurdle": round(h, 6), "design_pass": t >= h, "holdout_positive": mu_h > 0,
+            "holdout_consistent": consistent, "min_detectable_alpha": round(h * se_d * 12, 6),
+            "pass": t >= h and mu_h > 0 and consistent}
 
 
 def sensitivity_ok(center, neighbours, floor_ratio=0.5, spike_ratio=1.5):

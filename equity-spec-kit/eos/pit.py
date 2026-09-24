@@ -45,5 +45,23 @@ def asof_domain(rows, isin, domain, cutoffs):
     return max(cands, key=lambda r: parse_ts(r["usable_from"])) if cands else None
 
 
-def asof_with_basis_fallback(rows, isin, cutoff, company_files_consolidated):
-    return asof(rows, isin, "consolidated" if company_files_consolidated else "standalone", cutoff)
+def period_panel_as_of(facts, isin, basis, cutoff):
+    """{(fact, period_end): value}, each period at its latest version usable at the cutoff (Doc 02 s7; audit B5).
+    A restatement of an old period replaces that period only; it never becomes 'the latest row'."""
+    c = parse_ts(cutoff)
+    best = {}
+    for r in facts:
+        if r["isin"] != isin or r["basis"] != basis or parse_ts(r["usable_from"]) > c:
+            continue
+        k = (r["fact"], r["period_end"])
+        if k not in best or r["version"] > best[k]["version"]:
+            best[k] = r
+    return {k: r["value"] for k, r in best.items()}
+
+
+def basis_for_window(facts, isin, cutoff, periods, fact="revenue"):
+    """Basis of a multi-period feature, decided as of the cutoff: consolidated if consolidated figures exist for
+    every period, standalone if for none, None (missing) if the window would mix bases."""
+    cons = period_panel_as_of(facts, isin, "consolidated", cutoff)
+    have = [(fact, p) in cons for p in periods]
+    return "consolidated" if all(have) else ("standalone" if not any(have) else None)

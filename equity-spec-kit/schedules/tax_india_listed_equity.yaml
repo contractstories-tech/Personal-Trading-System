@@ -1,9 +1,11 @@
 # Tax view - listed equity, STT paid, resident individual. Effective-dated by SALE date. Document 04 s6.
 # A view only: it never gates a strategy's validity.
-schedule_version: 1.0.0
+schedule_version: 1.1.0
 holding_period_long_term: "more than 12 months"
 regimes:
-  - {from: 2004-10-01, to: 2018-03-31, stcg_rate: 0.15, ltcg_rate: 0.0,   ltcg_exemption_per_fy: null,
+  - {from: 2004-10-01, to: 2008-03-31, stcg_rate: 0.10, ltcg_rate: 0.0,   ltcg_exemption_per_fy: null,
+     status: verified, note: "s111A at 10% until the Finance Act 2008 raised it from FY 2008-09; LTCG exempt (old s10(38))"}
+  - {from: 2008-04-01, to: 2018-03-31, stcg_rate: 0.15, ltcg_rate: 0.0,   ltcg_exemption_per_fy: null,
      status: verified, note: "LTCG exempt (old s10(38))"}
   - {from: 2018-04-01, to: 2024-07-22, stcg_rate: 0.15, ltcg_rate: 0.10,  ltcg_exemption_per_fy: 100000,
      status: verified, grandfathering: "cost = max(actual cost, min(FMV on 31 Jan 2018, sale price)) for shares acquired before 1 Feb 2018"}

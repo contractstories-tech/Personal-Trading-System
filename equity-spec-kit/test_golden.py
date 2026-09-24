@@ -25,7 +25,7 @@ def close(a, b, tol=1e-6):
         return isinstance(a, dict) and set(a) == set(b) and all(close(a[k], b[k], tol) for k in b)
     if isinstance(b, (list, tuple)):
         return len(a) == len(b) and all(close(x, y, tol) for x, y in zip(a, b))
-    if isinstance(b, bool) or isinstance(a, bool) or isinstance(b, str):
+    if isinstance(b, bool) or isinstance(a, bool) or isinstance(b, str) or not isinstance(b, (int, float)):
         return a == b
     return math.isclose(a, b, abs_tol=tol)
 
@@ -46,7 +46,7 @@ def cases():
     for c in G["holding_period"]:
         yield c["id"], R.is_long_term(c["buy"], c["sell"]), c["expect"], 0
     for c in G["stop"]:
-        yield c["id"], R.run_stop(c["entry_fill"], c["atr_at_entry"], c["sessions"]), c["expect"], 1e-4
+        yield c["id"], R.run_stop(c["entry_fill"], c["atr_at_signal"], c["sessions"]), c["expect"], 1e-4
     for c in G["corporate_actions"]:
         if c["kind"] == "split_bonus":
             out = R.split_bonus(c["qty"], c["price_state"], c["f"], c["p_cum"])
@@ -60,7 +60,8 @@ def cases():
     for c in G["persist"]:
         yield c["id"], R.persist(c["values"], c["n"]), c["expect"], 0
     for c in G["zscores"]:
-        vals = list(eval(c["values"], {"range": range}))  # fixture-local expression, trusted file
+        v = c["values"]                                    # explicit data, no eval (audit D4)
+        vals = list(range(*v["range"])) if "range" in v else [v["repeat"][0]] * v["repeat"][1]
         z = R.zscores(vals, c["direction"])[c["index"]]
         yield c["id"], z, c["expect"], c.get("tol", 1e-6)
     for c in G["features"]:
@@ -72,25 +73,30 @@ def cases():
     for c in G["pit"]["cases"]:
         row = R.asof(rows, "INE0TEST", c["basis"], c["cutoff"])
         yield c["id"], row["value"] if row else None, c["expect_value"], 0
-    cn = G["pit"]["canary"]
-    try:
-        R.read_checked(rows[cn["row_index"]], cn["cutoff"])
-        raised = False
-    except R.LookAheadError:
-        raised = True
-    yield cn["id"], raised, True, 0
+    for key, want in (("canary", True), ("canary_boundary", False)):
+        cn = G["pit"][key]
+        try:
+            R.read_checked(rows[cn["row_index"]], cn["cutoff"])
+            raised = False
+        except R.LookAheadError:
+            raised = True
+        yield cn["id"], raised, want, 0
     for c in G["blackout"]:
         yield c["id"], R.in_blackout(c["quarters"]), c["expect"], 0
     # ---- r5.2 ----
     cu = G["cutoffs"]
     for c in cu["cases"]:
-        row = R.asof_domain(cu["rows"], "INE0TEST", c["domain"], cu["cutoffs"])
+        row = R.asof_domain(cu["rows"], c.get("isin", "INE0TEST"), c["domain"], cu["cutoffs"])
         yield c["id"], row["value"] if row else None, c["expect_value"], 0
-    bf_rows = [{"isin": "INE0T", "basis": "consolidated", "usable_from": "2026-09-01T18:00", "value": 1},
-               {"isin": "INE0T", "basis": "standalone", "usable_from": "2026-09-02T18:00", "value": 2}]
-    for c in G["basis_fallback"]:
-        row = R.asof_with_basis_fallback(bf_rows, "INE0T", "2026-09-03T20:00", c["files_consolidated"])
-        yield c["id"], row["value"] if row else None, c["expect_value"], 0
+    bw = G["basis_window"]
+    for c in bw["cases"]:
+        yield c["id"], R.basis_for_window(bw["facts"], "INE0B", c["cutoff"], c["periods"]), c["expect"], 0
+    rs = G["restatement"]
+    for c in rs["cases"]:
+        pan = R.period_panel_as_of(rs["facts"], "INE0R", "consolidated", c["cutoff"])
+        got = {"latest_period": R.latest_period(pan, "revenue"),
+               "fy2019": pan.get(("revenue", R.dt.date(2019, 3, 31))), "fy2020": pan.get(("revenue", R.dt.date(2020, 3, 31)))}
+        yield c["id"], got, c["expect"], 0
     for c in G["bounded_qty"]:
         q = R.bounded_qty(c["target_value"], c["reference_price"], c["hard_cap_value"], c["limit_price"])
         yield c["id"], [q, q * c["limit_price"]], [c["expect"], c["worst_case_value"]], 1e-6
@@ -107,10 +113,21 @@ def cases():
         got = (R.alpha_annualised(c["series"]) if k == "alpha" else
                R.sharpe_annualised(c["series"]) if k == "sharpe" else
                R.newey_west_se(c["series"], c["lag"]) if k == "newey_west" else
+               R.nw_tstat(c["series"], c["lag"]) if k == "nw_tstat" else
+               R.rolling_alpha_share(c["series"], c["window"]) if k == "rolling_share" else
+               R.max_drawdown(c["series"]) if k == "max_drawdown" else
+               R.promotion_hurdle(c["n_trials"]) if k == "hurdle" else
                R.turnover(c["total_traded_value"], c["average_portfolio_value"], c["years"]))
         yield c["id"], got, c["expect"], c["tol"]
+    for c in G["promotion"]:
+        d = R.promotion_decision(c["design"], c["holdout"], c["n_trials"], c["lag"])
+        yield c["id"], {k: d[k] for k in c["expect"]}, c["expect"], 0
     for c in G["sensitivity"]:
         yield c["id"], R.sensitivity_ok(c["center"], c["neighbours"]), c["expect"], 0
+    for c in G["isin_change"]:
+        got = (R.carry_isin_change(c["position"], c["f"], c["new_isin"], c["p_cum"]) if "position" in c
+               else R.stitch_across_isin(c["closes_old"], c["closes_new"], c["f"]))
+        yield c["id"], got, c["expect"], 1e-6
 
 
 def run(verbose=True):
@@ -212,16 +229,65 @@ def _mutants():
         return [None if z is None else z * k for z in out]
 
     def cfo_no_domain(sum_cfo, sum_pat):
-        return {"state": "known", "value": round(sum_cfo / sum_pat, 6)}
+        return {"state": "known", "value": round(sum_cfo / sum_pat, 6) if sum_pat else 0.0}
 
-    def roce_no_leases(ebit, equity, borrowings, leases, cash, total_assets, prior_ce):
-        return orig["roce"](ebit, equity, borrowings, 0, cash, total_assets, prior_ce - leases)
+    def roce_no_leases(ebit, equity, borrowings, leases, cash, total_assets, prior_ce, prior_total_assets):
+        return orig["roce"](ebit, equity, borrowings, 0, cash, total_assets, prior_ce - leases, prior_total_assets)
 
-    def roce_fails_cash_rich(ebit, equity, borrowings, leases, cash, total_assets, prior_ce):
+    def roce_fails_cash_rich(ebit, equity, borrowings, leases, cash, total_assets, prior_ce, prior_total_assets):
         ce = equity + borrowings + leases - cash
-        if equity <= 0 or ce <= 0.05 * total_assets:
+        if equity <= 0 or (ce + prior_ce) / 2 <= 0.05 * (total_assets + prior_total_assets) / 2:
             return {"state": "out_of_domain", "outcome": "fail"}
-        return orig["roce"](ebit, equity, borrowings, leases, cash, total_assets, prior_ce)
+        return orig["roce"](ebit, equity, borrowings, leases, cash, total_assets, prior_ce, prior_total_assets)
+
+    def roce_r54(ebit, equity, borrowings, leases, cash, total_assets, prior_ce, prior_total_assets):
+        # the r5.4 rule: cap tested on current CE only, for any EBIT, no universal cap
+        if equity <= 0:
+            return {"state": "out_of_domain", "outcome": "fail"}
+        ce = equity + borrowings + leases - cash
+        if ce <= 0.05 * total_assets:
+            return {"state": "known", "value": 1.0, "cash_rich_capped": True, "capped": True}
+        return {"state": "known", "value": round(ebit / ((ce + prior_ce) / 2), 6), "cash_rich_capped": False, "capped": False}
+
+    def roce_caps_losses(**k):
+        return orig["roce"](**{**k, "ebit": abs(k["ebit"])})
+
+    def roce_no_universal_cap(ebit, equity, borrowings, leases, cash, total_assets, prior_ce, prior_total_assets):
+        out = orig["roce"](ebit, equity, borrowings, leases, cash, total_assets, prior_ce, prior_total_assets)
+        if out.get("capped") and not out.get("cash_rich_capped"):
+            ce = (equity + borrowings + leases - cash + prior_ce) / 2
+            out = {**out, "value": round(ebit / ce, 6)}
+        return out
+
+    def rights_fractional(held, a, b, S, p_cum, re_listed_close=None):
+        out = orig["rights_value"](held, a, b, S, p_cum, re_listed_close)
+        terp = (b * p_cum + a * S) / (a + b)
+        per = re_listed_close if re_listed_close is not None else max(0.0, terp - S)
+        return {**out, "entitlements": held * a / b, "value": round(held * a / b * per, 2)}
+
+    def basis_timeless(facts, isin, cutoff, periods, fact="revenue"):
+        return orig["basis_for_window"](facts, isin, "9999-12-31T00:00", periods, fact)
+
+    def panel_latest_row(facts, isin, basis, cutoff):
+        rows = [r for r in facts if r["isin"] == isin and r["basis"] == basis and r["usable_from"] <= cutoff]
+        if not rows:
+            return {}
+        r = max(rows, key=lambda r: r["usable_from"])     # r5.4-style: 'the latest row'
+        return {(r["fact"], r["period_end"]): r["value"]}
+
+    def isin_change_resets_history(position, f, new_isin, p_cum):
+        return {**orig["carry_isin_change"](position, f, new_isin, p_cum), "holding_days": 0, "buy_date": None}
+
+    def hurdle_ignores_trials(n_trials, alpha=0.05):
+        return orig["promotion_hurdle"](1, alpha)
+
+    def holdout_sign_only(design, holdout, n_trials, lag=6):
+        d = orig["promotion_decision"](design, holdout, n_trials, lag)
+        return {**d, "holdout_consistent": True, "pass": d["design_pass"] and d["holdout_positive"]}
+
+    def rolling_share_counts_zero(x, window=36):
+        wins = [x[i:i + window] for i in range(0, len(x) - window + 1)]
+        return sum(1 for w in wins if sum(w) >= 0) / len(wins)
 
     def stamp_both_sides(side, value, date, schedule, profile="flat_20"):
         out = orig["trade_costs"](side, value, date, schedule, profile)
@@ -232,7 +298,11 @@ def _mutants():
     def lt_inclusive(b, s):
         import datetime as d
         b, s = d.date.fromisoformat(str(b)), d.date.fromisoformat(str(s))
-        return s >= b.replace(year=b.year + 1)
+        try:
+            anniv = b.replace(year=b.year + 1)
+        except ValueError:
+            anniv = b.replace(year=b.year + 1, day=28)
+        return s >= anniv
 
     def rank_no_tol(rows, tol=1e-9):
         return orig["rank_order"](rows, tol=0.0)
@@ -263,14 +333,16 @@ def _mutants():
         return m.floor(tv / ref)
 
     def exemption_on_gross(years, schedule, carry_in=None):
-        # the defect found while writing G28a: exemption applied before the carried loss is set off
-        out = orig["tax_multi_year"](years, schedule, carry_in)
-        last = dict(out[-1])
-        if last["ltcg"] == 150000.0:
-            last["tax_before_cess"] = 9375.0
-            last["tax_with_cess"] = 9750.0
-        out[-1] = last
-        return out
+        # R5.9, now planted in the logic itself (r5.4 hard-coded this mutant's answer for one fixture: audit C1)
+        return R._tax_multi_year(years, schedule, carry_in, _exempt_before_setoff=True)
+
+    def straddle_exemption_from_fy_start(years, schedule, carry_in=None):
+        real = R._regime
+        R._regime = lambda sch, d: real(sch, R.dt.date(d.year - 1, d.month, d.day)) if (d.month, d.day) == (3, 31) else real(sch, d)
+        try:
+            return orig["tax_multi_year"](years, schedule, carry_in)
+        finally:
+            R._regime = real
 
     def demerger_per_r53_prose(q, p_cum, p_disc, ratio):
         # r5.3 prose: implied value (P_cum - P_discovered) x ratio per parent share
@@ -290,10 +362,6 @@ def _mutants():
     def sensitivity_requires_peak(center, neighbours, floor_ratio=0.5, spike_ratio=1.5):
         return orig["sensitivity_ok"](center, neighbours) and all(abs(center) >= abs(n) for n in neighbours)
 
-    def basis_substitutes_per_date(rows, isin, cutoff, files_consolidated):
-        c = [r for r in rows if r["isin"] == isin and r["usable_from"] <= cutoff]
-        return max(c, key=lambda r: r["usable_from"]) if c else None
-
     def band_missing_half_percent(sessions, **kw):
         return orig["fill_sell_on_open"](sessions, missing_band_haircut=0.005)
 
@@ -307,7 +375,17 @@ def _mutants():
             ("quantity ignores the hard cap", "bounded_qty", qty_ignores_cap),
             ("exemption applied before loss set-off", "tax_multi_year", exemption_on_gross),
             ("sensitivity requires the chosen value to be the peak", "sensitivity_ok", sensitivity_requires_peak),
-            ("basis substituted per date instead of per company", "asof_with_basis_fallback", basis_substitutes_per_date),
+            ("basis decided with today's knowledge (timeless)", "basis_for_window", basis_timeless),
+            ("fundamentals read as 'the latest row', not per period", "period_panel_as_of", panel_latest_row),
+            ("ROCE per the r5.4 rule", "roce", roce_r54),
+            ("ROCE cash-rich cap given to operating losses", "roce", roce_caps_losses),
+            ("ROCE without the universal 1.00 cap", "roce", roce_no_universal_cap),
+            ("rights entitlements kept fractional", "rights_value", rights_fractional),
+            ("ISIN change resets holding period and days", "carry_isin_change", isin_change_resets_history),
+            ("promotion hurdle ignores the trial count", "promotion_hurdle", hurdle_ignores_trials),
+            ("holdout judged on sign only", "promotion_decision", holdout_sign_only),
+            ("rolling-window share counts a zero mean as positive", "rolling_alpha_share", rolling_share_counts_zero),
+            ("straddle-year exemption taken from the FY start", "tax_multi_year", straddle_exemption_from_fy_start),
             ("missing band treated as benign (0.5%)", "fill_sell_on_open", band_missing_half_percent),
             ("stop not tested on the fill day", "run_stop", stop_skips_fill_day),
             ("peak rule accepts ties", "run_stop", stop_ties_update),

@@ -93,13 +93,21 @@ def golden_pit_cases_pass_on_production_primitive():
     cu = G["cutoffs"]
     cuts = {k: ist(v) for k, v in cu["cutoffs"].items()}
     for c in cu["cases"]:
-        r = pit.asof_domain(_g(cu["rows"]), "INE0TEST", c["domain"], cuts)
+        r = pit.asof_domain(_g(cu["rows"]), c.get("isin", "INE0TEST"), c["domain"], cuts)
         assert (r["value"] if r else None) == c["expect_value"], c["id"]
-    bf = _g([{"isin": "INE0T", "basis": "consolidated", "usable_from": "2026-09-01T18:00", "value": 1},
-             {"isin": "INE0T", "basis": "standalone", "usable_from": "2026-09-02T18:00", "value": 2}])
-    for c in G["basis_fallback"]:
-        r = pit.asof_with_basis_fallback(bf, "INE0T", ist("2026-09-03T20:00"), c["files_consolidated"])
-        assert r["value"] == c["expect_value"], c["id"]
+    bw = G["basis_window"]
+    for c in bw["cases"]:
+        assert pit.basis_for_window(_g(bw["facts"]), "INE0B", ist(c["cutoff"]), c["periods"]) == c["expect"], c["id"]
+    rs = G["restatement"]
+    for c in rs["cases"]:
+        pan = pit.period_panel_as_of(_g(rs["facts"]), "INE0R", "consolidated", ist(c["cutoff"]))
+        assert pan[("revenue", dt.date(2019, 3, 31))] == c["expect"]["fy2019"], c["id"]
+        assert pan[("revenue", dt.date(2020, 3, 31))] == c["expect"]["fy2020"], c["id"]
+    for c in G["pit"]["cases"]:     # includes G19e: usable exactly at the cutoff is used
+        r = pit.asof(rows, "INE0TEST", c["basis"], ist(c["cutoff"]))
+        assert (r["value"] if r else None) == c["expect_value"], c["id"]
+    cb = G["pit"]["canary_boundary"]
+    pit.read_checked(rows[cb["row_index"]], ist(cb["cutoff"]))          # G20b: no raise at equality
 
 
 @test

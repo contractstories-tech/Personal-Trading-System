@@ -5,6 +5,7 @@ fills:
   - {id: G02, doc: "open above the limit: no fill", limit: 105, open: 106, upper_band: 110, expect: null}
   - {id: G03, doc: "open AT the upper band: no fill even though open <= limit (open tested against the band, not the close state)",
      limit: 105, open: 104.5, upper_band: 104.5, expect: null}
+  - {id: G01b, doc: "r5.5 boundary: an open exactly AT the limit fills (open <= limit)", limit: 105, open: 105, upper_band: 110, expect: 105}
 sells:
   - {id: G04, doc: "normal market-on-open exit", sessions: [{open: 98, lower_band: 90}], expect: [98, 0]}
   - {id: G05, doc: "open locked at lower band, fills next session with one-session haircut",
@@ -14,16 +15,20 @@ sells:
      sessions: [{open: 60, lower_band: 60}, {open: 57, lower_band: 57}, {open: 54, lower_band: 54}, {open: 52, lower_band: 52},
                 {open: 51, lower_band: 51}, {open: 50.5, lower_band: 50.5}, {open: 50, lower_band: 50}, {open: 50, lower_band: 47}],
      expect: [47.5, 7]}
+  - {id: G06c, doc: "r5.5: one locked session, then a missing band file: 1% lock haircut + 2% missing-band haircut; 88 x 0.97 = 85.36",
+     sessions: [{open: 90, lower_band: 90}, {open: 88, lower_band: null}], expect: [85.36, 1]}
 impact:
   - {id: G07a, doc: "Rs 0.5 cr into Rs 25 cr ADV fails S1 (0.35%)", value_cr: 0.5, adv_cr: 25, expect: 0.0038284, s1_passes: false}
   - {id: G07b, doc: "Rs 0.5 cr into Rs 100 cr ADV passes S1", value_cr: 0.5, adv_cr: 100, expect: 0.0019142, s1_passes: true}
+  - {id: G07c, doc: "r5.5: lowest tier - Rs 0.1 cr into Rs 10 cr ADV: 0.0020 + 0.02 x sqrt(0.01) = 0.0040", value_cr: 0.1, adv_cr: 10, expect: 0.004, s1_passes: false}
 costs:
   - {id: G08a, doc: "buy Rs 1,00,000, current schedule, flat_20", side: buy, value: 100000, date: 2026-09-21,
      expect: {brokerage: 20.0, stt: 100.0, stamp_duty: 15.0, exchange_txn_nse: 2.97, sebi_turnover_fee: 0.1, gst: 4.15, total: 142.22}}
   - {id: G08b, doc: "sell Rs 1,10,000, current schedule, flat_20", side: sell, value: 110000, date: 2026-09-21,
      expect: {brokerage: 20.0, stt: 110.0, stamp_duty: 0.0, exchange_txn_nse: 3.27, sebi_turnover_fee: 0.11, gst: 4.21, dp_charge: 15.93, total: 153.52}}
-  - {id: G08c, doc: "buy Rs 1,00,000 in 2012: historical STT and service tax", side: buy, value: 100000, date: 2012-01-02,
-     expect: {brokerage: 20.0, stt: 125.0, stamp_duty: 15.0, exchange_txn_nse: 3.22, sebi_turnover_fee: 0.1, gst: 3.5, total: 166.82}}
+  - {id: G08c, doc: "buy Rs 1,00,000 on 2 Jan 2012: STT 0.125%; service tax 10.3% (r5.5, audit D3) on 20 + 3.22 + 0.10 = 23.32 -> 2.40",
+     side: buy, value: 100000, date: 2012-01-02,
+     expect: {brokerage: 20.0, stt: 125.0, stamp_duty: 15.0, exchange_txn_nse: 3.22, sebi_turnover_fee: 0.1, gst: 2.4, total: 165.72}}
 tax:
   - {id: G09a, doc: "short-term loss offsets long-term gain; within exemption", fy: 2026,
      disposals: [{buy_date: 2025-06-02, sell_date: 2026-07-01, qty: 100, cost_per_share: 1000, sale_per_share: 1500},
@@ -47,15 +52,20 @@ tax:
 holding_period:
   - {id: G09f, doc: "exactly 12 months is still short-term", buy: 2025-06-02, sell: 2026-06-02, expect: false}
   - {id: G09g, doc: "12 months and a day is long-term", buy: 2025-06-02, sell: 2026-06-03, expect: true}
+  - {id: G09h, doc: "r5.5: bought 29 Feb 2024; 28 Feb 2025 is not more than 12 months", buy: 2024-02-29, sell: 2025-02-28, expect: false}
+  - {id: G09i, doc: "r5.5: bought 29 Feb 2024; 1 Mar 2025 is long-term", buy: 2024-02-29, sell: 2025-03-01, expect: true}
 stop:
   - {id: G10, doc: "sessions start at the FILL session; tie does not update; post-peak calm cannot lift the stop; exit on session 6",
-     entry_fill: 100, atr_at_entry: 0.04,
+     entry_fill: 100, atr_at_signal: 0.04,
      sessions: [{close: 100, atr_pct: 0.04}, {close: 105, atr_pct: 0.04}, {close: 110, atr_pct: 0.03}, {close: 110, atr_pct: 0.02},
                 {close: 106, atr_pct: 0.015}, {close: 105, atr_pct: 0.015}, {close: 101, atr_pct: 0.015}],
      expect: {stops_tested: [90.0, 90.0, 94.5, 101.75, 101.75, 101.75, 101.75], exit_session: 6}}
   - {id: G10b, doc: "a fill-day close below the initial stop exits on the fill day itself",
-     entry_fill: 100, atr_at_entry: 0.04, sessions: [{close: 88, atr_pct: 0.04}],
+     entry_fill: 100, atr_at_signal: 0.04, sessions: [{close: 88, atr_pct: 0.04}],
      expect: {stops_tested: [90.0], exit_session: 0}}
+  - {id: G10c, doc: "r5.5 boundary: a close exactly AT the stop does not exit (close < stop is strict)",
+     entry_fill: 100, atr_at_signal: 0.04, sessions: [{close: 90, atr_pct: 0.04}],
+     expect: {stops_tested: [90.0], exit_session: null}}
 corporate_actions:
   - {id: G11a, kind: split_bonus, doc: "1:1 bonus mid-position: quantity doubles, every price-state value halves",
      qty: 200, price_state: {entry_basis: 100, highest_close_since_entry: 120, stop_in_force: 108}, f: 0.5, p_cum: 240,
@@ -78,9 +88,11 @@ corporate_actions:
      parent_qty: 101, p_cum: 2500, p_discovered: 2200, ratio: 0.5,
      expect: {f: 0.88, parent_qty: 101, stub_qty: 50, stub_value: 30000.0, stub_implied_per_share: 600.0, cash_in_lieu: 300.0}}
   - {id: G13a, kind: rights, doc: "rights 1:4 at 80, cum 120, pre-2020: intrinsic value", held: 100, a: 1, b: 4, S: 80, p_cum: 120,
-     expect: {terp: 112.0, f: 0.933333, entitlements: 25.0, value: 800.0}}
+     expect: {terp: 112.0, f: 0.933333, entitlements: 25, value: 800.0}}
   - {id: G13b, kind: rights, doc: "same, with a listed entitlement closing at 30", held: 100, a: 1, b: 4, S: 80, p_cum: 120, re_listed_close: 30,
-     expect: {terp: 112.0, f: 0.933333, entitlements: 25.0, value: 750.0}}
+     expect: {terp: 112.0, f: 0.933333, entitlements: 25, value: 750.0}}
+  - {id: G13c, kind: rights, doc: "r5.5: rights 2:7 at 50, cum 100, 101 held: TERP 800/9 = 88.8889; floor(202/7) = 28 whole entitlements x 38.8889 = 1088.89",
+     held: 101, a: 2, b: 7, S: 50, p_cum: 100, expect: {terp: 88.8889, f: 0.888889, entitlements: 28, value: 1088.89}}
 tranches:
   - {id: G14a, doc: "three tranches reach exactly the target; later tranches convert at prior close, not the capped limit",
      target_value: 300000, entry_ref: 1000, weights: [0.3334, 0.3333, 0.3333],
@@ -97,6 +109,11 @@ tranches:
      t2: {revised_target_value: 200000, prior_close: 1000, attempts: [true]},
      t3: {revised_target_value: 200000, prior_close: 1000, attempts: [true]},
      expect: {quantities: [100, 66, 34], earmark: 200, cancelled_after: null}}
+  - {id: G14d, doc: "r5.5: revised target falls below tranche 2's share - tranche 2 is clamped to the remainder (120 - 100 = 20, not floor(0.3333 x 120) = 39) and tranche 3 buys nothing",
+     target_value: 300000, entry_ref: 1000, weights: [0.3334, 0.3333, 0.3333],
+     t2: {revised_target_value: 120000, prior_close: 1000, attempts: [true]},
+     t3: {revised_target_value: 120000, prior_close: 1000, attempts: [true]},
+     expect: {quantities: [100, 20, 0], earmark: 120, cancelled_after: null}}
 persist:
   - {id: G15a, values: [true, true, true], n: 3, expect: true}
   - {id: G15b, doc: "one unknown in the window -> unknown, so an exit cannot fire", values: [true, null, true], n: 3, expect: null}
@@ -105,21 +122,36 @@ persist:
   - {id: G15e, doc: "insufficient history -> unknown", values: [true, true], n: 3, expect: null}
 zscores:
   - {id: G16a, doc: "values 1..30: linear-quantile winsorisation, population sd; z of the top value",
-     values: "range(1, 31)", direction: higher_better, index: 29, expect: 1.64786, tol: 0.0001}
-  - {id: G16b, doc: "lower_better flips the sign", values: "range(1, 31)", direction: lower_better, index: 29, expect: -1.64786, tol: 0.0001}
-  - {id: G16c, doc: "value 16", values: "range(1, 31)", direction: higher_better, index: 15, expect: 0.05798, tol: 0.0001}
-  - {id: G16d, doc: "29 contributors -> missing for all", values: "range(1, 30)", direction: higher_better, index: 0, expect: null}
-  - {id: G16e, doc: "zero standard deviation -> missing for all", values: "[5.0] * 30", direction: higher_better, index: 0, expect: null}
+     values: {range: [1, 31]}, direction: higher_better, index: 29, expect: 1.64786, tol: 0.0001}
+  - {id: G16b, doc: "lower_better flips the sign", values: {range: [1, 31]}, direction: lower_better, index: 29, expect: -1.64786, tol: 0.0001}
+  - {id: G16c, doc: "value 16", values: {range: [1, 31]}, direction: higher_better, index: 15, expect: 0.05798, tol: 0.0001}
+  - {id: G16d, doc: "29 contributors -> missing for all", values: {range: [1, 30]}, direction: higher_better, index: 0, expect: null}
+  - {id: G16e, doc: "zero standard deviation -> missing for all", values: {repeat: [5.0, 30]}, direction: higher_better, index: 0, expect: null}
 features:
-  - {id: G17a, kind: roce, doc: "leases inside capital employed", args: {ebit: 210, equity: 1000, borrowings: 200, leases: 100, cash: 250, total_assets: 2000, prior_ce: 950},
-     expect: {state: known, value: 0.21, cash_rich_capped: false}}
-  - {id: G17b, kind: roce, doc: "cash-rich, asset-light: capped at 1.00 and passes rather than failing", args: {ebit: 200, equity: 500, borrowings: 0, leases: 0, cash: 480, total_assets: 1000, prior_ce: 25},
-     expect: {state: known, value: 1.0, cash_rich_capped: true}}
-  - {id: G17c, kind: roce, doc: "negative equity fails", args: {ebit: 50, equity: -10, borrowings: 300, leases: 0, cash: 20, total_assets: 400, prior_ce: 270},
+  - {id: G17a, kind: roce, doc: "leases inside capital employed: CE 1050, prior 950, average 1000; 210 / 1000", args: {ebit: 210, equity: 1000, borrowings: 200, leases: 100, cash: 250, total_assets: 2000, prior_ce: 950, prior_total_assets: 2000},
+     expect: {state: known, value: 0.21, cash_rich_capped: false, capped: false}}
+  - {id: G17b, kind: roce, doc: "cash-rich, asset-light, profitable: average CE 22.5 <= 5% of average TA 50 -> 1.00 capped, passes", args: {ebit: 200, equity: 500, borrowings: 0, leases: 0, cash: 480, total_assets: 1000, prior_ce: 25, prior_total_assets: 1000},
+     expect: {state: known, value: 1.0, cash_rich_capped: true, capped: true}}
+  - {id: G17c, kind: roce, doc: "negative equity fails", args: {ebit: 50, equity: -10, borrowings: 300, leases: 0, cash: 20, total_assets: 400, prior_ce: 270, prior_total_assets: 400},
      expect: {state: out_of_domain, outcome: fail}}
+  # r5.5 (audit B6): each of the next three was wrong in r5.4 (1.00, 6.00 and -1.20 respectively)
+  - {id: G17f, kind: roce, doc: "loss-making cash shell (EBIT -20, average CE 10 <= 26): out of domain, fails - never 1.00", args: {ebit: -20, equity: 500, borrowings: 0, leases: 0, cash: 490, total_assets: 520, prior_ce: 10, prior_total_assets: 520},
+     expect: {state: out_of_domain, outcome: fail}}
+  - {id: G17g, kind: roce, doc: "leaving net cash: CE 150, prior -140, average 5 <= 50 with EBIT > 0 -> 1.00 capped (r5.4: 6.00)", args: {ebit: 30, equity: 400, borrowings: 0, leases: 0, cash: 250, total_assets: 1000, prior_ce: -140, prior_total_assets: 1000},
+     expect: {state: known, value: 1.0, cash_rich_capped: true, capped: true}}
+  - {id: G17h, kind: roce, doc: "average CE negative (-25) with EBIT > 0 -> 1.00 capped (r5.4: -1.20, failing a good business)", args: {ebit: 30, equity: 400, borrowings: 0, leases: 0, cash: 250, total_assets: 1000, prior_ce: -200, prior_total_assets: 1000},
+     expect: {state: known, value: 1.0, cash_rich_capped: true, capped: true}}
+  - {id: G17i, kind: roce, doc: "universal cap: 500 / 400 = 1.25 -> 1.00, capped but not cash-rich", args: {ebit: 500, equity: 400, borrowings: 0, leases: 0, cash: 0, total_assets: 1000, prior_ce: 400, prior_total_assets: 1000},
+     expect: {state: known, value: 1.0, cash_rich_capped: false, capped: true}}
+  - {id: G17j, kind: roce, doc: "boundary inclusive: average CE exactly 5% of average TA (50) -> cash-rich cap", args: {ebit: 10, equity: 50, borrowings: 0, leases: 0, cash: 0, total_assets: 1000, prior_ce: 50, prior_total_assets: 1000},
+     expect: {state: known, value: 1.0, cash_rich_capped: true, capped: true}}
+  - {id: G17k, kind: roce, doc: "just above the boundary (51 > 50): computed, 10 / 51 = 0.196078", args: {ebit: 10, equity: 51, borrowings: 0, leases: 0, cash: 0, total_assets: 1000, prior_ce: 51, prior_total_assets: 1000},
+     expect: {state: known, value: 0.196078, cash_rich_capped: false, capped: false}}
   - {id: G17d, kind: cfo_pat, doc: "negative over negative is NOT 1.5 - it is out of domain", args: {sum_cfo: -150, sum_pat: -100},
      expect: {state: out_of_domain, outcome: fail}}
   - {id: G17e, kind: cfo_pat, args: {sum_cfo: 140, sum_pat: 200}, expect: {state: known, value: 0.7}}
+  - {id: G17l, kind: cfo_pat, doc: "r5.5 boundary: three years of zero total profit is out of domain, not a division error", args: {sum_cfo: 50, sum_pat: 0},
+     expect: {state: out_of_domain, outcome: fail}}
 ranking:
   - {id: G18a, doc: "scores within 1e-9 tie; higher market cap first", rows: [{isin: A, score: 0.5000000001, market_cap: 100}, {isin: B, score: 0.5, market_cap: 200}, {isin: C, score: 0.49, market_cap: 300}],
      expect: [B, A, C]}
@@ -135,7 +167,9 @@ pit:
     - {id: G19b, doc: "a filing usable at 20:30 is invisible to the 20:00 run", basis: consolidated, cutoff: "2026-09-18T20:00", expect_value: 1}
     - {id: G19c, doc: "and visible to the next day's run", basis: consolidated, cutoff: "2026-09-19T20:00", expect_value: 3}
     - {id: G19d, doc: "a filing usable at 18:30 on D is used on D (cutoff 20:00, never midnight)", basis: standalone, cutoff: "2026-09-18T20:00", expect_value: 2}
+    - {id: G19e, doc: "r5.5 boundary: a row usable EXACTLY at the cutoff is used (usable_from <= cutoff)", basis: consolidated, cutoff: "2026-09-18T20:30", expect_value: 3}
   canary: {id: G20, doc: "reading a row after its cutoff raises a hard error", row_index: 2, cutoff: "2026-09-18T20:00"}
+  canary_boundary: {id: G20b, doc: "r5.5 boundary: reading a row usable exactly at the cutoff does not raise", row_index: 2, cutoff: "2026-09-18T20:30"}
 blackout:
   - {id: G21a, doc: "three post-demerger quarters filed: still in valuation blackout", quarters: 3, expect: true}
   - {id: G21b, quarters: 4, expect: false}
@@ -146,13 +180,34 @@ cutoffs:
     - {isin: INE0TEST, domain: disclosure,   usable_from: "2026-09-18T21:00", value: 10}
     - {isin: INE0TEST, domain: exchange_eod, usable_from: "2026-09-18T22:30", value: 20}
     - {isin: INE0TEST, domain: disclosure,   usable_from: "2026-09-18T18:30", value: 30}
+    - {isin: INE0EDGE, domain: disclosure,   usable_from: "2026-09-18T20:00", value: 40}
   cutoffs: {disclosure: "2026-09-18T20:00", exchange_eod: "2026-09-18T23:00"}
   cases:
     - {id: G22a, doc: "the 22:30 bhavcopy IS used by the 23:00 run", domain: exchange_eod, expect_value: 20}
     - {id: G22b, doc: "the 21:00 filing is NOT used by the same run - one scalar cutoff cannot do both", domain: disclosure, expect_value: 30}
-basis_fallback:
-  - {id: G23a, doc: "a company that files consolidated: standalone never substitutes", files_consolidated: true, expect_value: 1}
-  - {id: G23b, doc: "a company that files no consolidated statements: standalone is used", files_consolidated: false, expect_value: 2}
+    - {id: G22c, doc: "r5.5 boundary: a structured filing at 19:30 + 30 min lag is usable at exactly 20:00 and IS used", isin: INE0EDGE, domain: disclosure, expect_value: 40}
+# r5.5 (audit B5): the basis is decided AS OF THE CUTOFF for the whole window, never from today's knowledge
+basis_window:
+  facts:
+    - {isin: INE0B, basis: standalone,   fact: revenue, period_end: 2015-03-31, version: 1, usable_from: "2015-05-20T18:00", value: 100}
+    - {isin: INE0B, basis: standalone,   fact: revenue, period_end: 2016-03-31, version: 1, usable_from: "2016-05-20T18:00", value: 110}
+    - {isin: INE0B, basis: consolidated, fact: revenue, period_end: 2016-03-31, version: 1, usable_from: "2016-05-25T18:00", value: 130}
+    - {isin: INE0B, basis: standalone,   fact: revenue, period_end: 2017-03-31, version: 1, usable_from: "2017-05-20T18:00", value: 120}
+    - {isin: INE0B, basis: consolidated, fact: revenue, period_end: 2017-03-31, version: 1, usable_from: "2017-05-20T18:00", value: 145}
+  cases:
+    - {id: G23a, doc: "window FY16-FY17 at June 2017: consolidated exists for both -> consolidated", periods: [2016-03-31, 2017-03-31], cutoff: "2017-06-01T20:00", expect: consolidated}
+    - {id: G23b, doc: "window FY15 at June 2015: no consolidated filed yet -> standalone (r5.4's timeless 'files consolidated' flag would have excluded it)", periods: [2015-03-31], cutoff: "2015-06-01T20:00", expect: standalone}
+    - {id: G23c, doc: "window FY15-FY16 mixes bases -> missing, never a blend", periods: [2015-03-31, 2016-03-31], cutoff: "2016-06-01T20:00", expect: null}
+    - {id: G23d, doc: "window FY16 on 22 May 2016, before the consolidated filing (25 May) was usable -> standalone at that date", periods: [2016-03-31], cutoff: "2016-05-22T20:00", expect: standalone}
+restatement:
+  facts:
+    - {isin: INE0R, basis: consolidated, fact: revenue, period_end: 2019-03-31, version: 1, usable_from: "2019-05-20T18:00", value: 500}
+    - {isin: INE0R, basis: consolidated, fact: revenue, period_end: 2020-03-31, version: 1, usable_from: "2020-05-20T18:00", value: 560}
+    - {isin: INE0R, basis: consolidated, fact: revenue, period_end: 2019-03-31, version: 2, usable_from: "2020-08-10T18:00", value: 480}
+  cases:
+    - {id: G31a, doc: "FY19 restated in Aug 2020, after FY20 was filed: FY19 takes v2, FY20 keeps v1, and the latest period is still FY20", cutoff: "2020-09-01T20:00",
+       expect: {latest_period: 2020-03-31, fy2019: 480, fy2020: 560}}
+    - {id: G31b, doc: "before the restatement was usable, FY19 is v1", cutoff: "2020-06-01T20:00", expect: {latest_period: 2020-03-31, fy2019: 500, fy2020: 560}}
 bounded_qty:
   - {id: G24a, doc: "quantity from the reference price, capped so the worst allowed fill cannot breach the hard cap",
      target_value: 100000, reference_price: 100, hard_cap_value: 100000, limit_price: 103, expect: 970, worst_case_value: 99910}
@@ -173,6 +228,7 @@ slots:
 dividends:
   - {id: G27a, doc: "accrued on the ex-date but not spendable", amount: 5000, ex_date: 2026-08-10, pay_date: 2026-09-05, as_of: 2026-08-20, expect: {accrued: 5000.0, spendable: 0.0}}
   - {id: G27b, doc: "spendable from the payment date", amount: 5000, ex_date: 2026-08-10, pay_date: 2026-09-05, as_of: 2026-09-05, expect: {accrued: 5000.0, spendable: 5000.0}}
+  - {id: G27c, doc: "r5.5 boundary: on the ex-date itself return is accrued, cash not spendable", amount: 5000, ex_date: 2026-08-10, pay_date: 2026-09-05, as_of: 2026-08-10, expect: {accrued: 5000.0, spendable: 0.0}}
 tax_multi:
   - {id: G28a, doc: "a short-term loss carries forward and sets off a later long-term gain",
      years: [{fy: 2025, disposals: [{buy_date: 2025-05-01, sell_date: 2025-09-01, qty: 500, cost_per_share: 200, sale_per_share: 100}]},
@@ -195,13 +251,50 @@ tax_multi:
      years: [{fy: 2025, disposals: [{buy_date: 2025-05-01, sell_date: 2025-09-01, qty: 500, cost_per_share: 200, sale_per_share: 100}]},
              {fy: 2026, disposals: [{buy_date: 2026-05-01, sell_date: 2026-08-03, qty: 1000, cost_per_share: 100, sale_per_share: 180}]}],
      expect_last: {fy: 2026, stcg: 30000.0, ltcg: 0.0, carried_st_loss: 0.0, carried_lt_loss: 0.0, tax_before_cess: 6000.0, tax_with_cess: 6240.0}}
+  # r5.5 (audit C1): branches no golden case exercised in r5.4
+  - {id: G28f, doc: "straddle year FY 2024-25: one LT gain of 2,00,000 sold in June 2024 (old regime, 10%); the exemption is the FY-end one, 1,25,000; taxable 75,000 x 10% = 7,500",
+     years: [{fy: 2024, disposals: [{buy_date: 2022-01-03, sell_date: 2024-06-03, qty: 1000, cost_per_share: 100, sale_per_share: 300}]}],
+     expect_last: {fy: 2024, stcg: 0.0, ltcg: 200000.0, carried_st_loss: 0.0, carried_lt_loss: 0.0, tax_before_cess: 7500.0, tax_with_cess: 7800.0}}
+  - {id: G28g, doc: "straddle year, LT gains in both regimes (1,00,000 each): taxable 75,000 shared 50/50 -> 37,500 x 10% + 37,500 x 12.5% = 8,437.50",
+     years: [{fy: 2024, disposals: [{buy_date: 2022-01-03, sell_date: 2024-06-03, qty: 1000, cost_per_share: 100, sale_per_share: 200},
+                                    {buy_date: 2022-01-03, sell_date: 2024-09-02, qty: 1000, cost_per_share: 100, sale_per_share: 200}]}],
+     expect_last: {fy: 2024, stcg: 0.0, ltcg: 200000.0, carried_st_loss: 0.0, carried_lt_loss: 0.0, tax_before_cess: 8437.5, tax_with_cess: 8775.0}}
+  - {id: G28h, doc: "same-year ST loss (30,000) set off against LT gain (2,00,000) inside the multi-year view: 1,70,000 - 1,25,000 = 45,000 x 12.5% = 5,625",
+     years: [{fy: 2026, disposals: [{buy_date: 2024-01-01, sell_date: 2026-06-01, qty: 1000, cost_per_share: 100, sale_per_share: 300},
+                                    {buy_date: 2026-05-01, sell_date: 2026-08-03, qty: 300, cost_per_share: 200, sale_per_share: 100}]}],
+     expect_last: {fy: 2026, stcg: 0.0, ltcg: 170000.0, carried_st_loss: 0.0, carried_lt_loss: 0.0, tax_before_cess: 5625.0, tax_with_cess: 5850.0}}
 metrics:
   - {id: G29a, kind: alpha, series: [0.01, 0.02, -0.005, 0.015], expect: 0.12, tol: 0.000001}
   - {id: G29b, kind: sharpe, series: [0.01, 0.02, -0.005, 0.015], expect: 3.2072, tol: 0.0001}
   - {id: G29c, kind: newey_west, series: [0.01, 0.02, -0.005, 0.015], lag: 1, expect: 0.0027951, tol: 0.0000001}
   - {id: G29d, kind: turnover, total_traded_value: 200000, average_portfolio_value: 500000, years: 2, expect: 0.1, tol: 0.000001}
+  # r5.5 (audit B7; Doc 04 s11-s12)
+  - {id: G29e, kind: nw_tstat, doc: "0.01 / 0.0027951 (G29c)", series: [0.01, 0.02, -0.005, 0.015], lag: 1, expect: 3.57771, tol: 0.0001}
+  - {id: G29f, kind: rolling_share, doc: "window 3 over [1,-1,-1,2,2]: means -1/3, 0, +1 -> only the last is positive (0 is not) -> 1/3", series: [1, -1, -1, 2, 2], window: 3, expect: 0.333333, tol: 0.000001}
+  - {id: G29g, kind: max_drawdown, doc: "100, 120, 90, 130, 65: worst is 130 -> 65, 50%", series: [100, 120, 90, 130, 65], expect: 0.5, tol: 0.000001}
+  - {id: G29h, kind: hurdle, doc: "one design trial: two-sided 5% -> 1.959964", n_trials: 1, expect: 1.959964, tol: 0.000001}
+  - {id: G29i, kind: hurdle, doc: "five trials: Bonferroni 0.05/10 upper tail -> 2.575829", n_trials: 5, expect: 2.575829, tol: 0.000001}
+  - {id: G29j, kind: hurdle, doc: "twenty trials: 0.05/40 -> 3.023341", n_trials: 20, expect: 3.023341, tol: 0.000001}
+promotion:
+  - {id: G32a, doc: "design t 3.578 >= 1.96 (1 trial); holdout mean 0.01 > 0 and >= 0.01 - 2 x 0.0025 (holdout NW SE, lag 1) -> pass",
+     design: [0.01, 0.02, -0.005, 0.015], holdout: [0.01, 0.0, 0.02, 0.01], n_trials: 1, lag: 1,
+     expect: {design_pass: true, holdout_positive: true, holdout_consistent: true, pass: true}}
+  - {id: G32b, doc: "the same evidence after 200 logged design trials: hurdle 3.662 > 3.578 -> fails; the trial count is a criterion, not a footnote",
+     design: [0.01, 0.02, -0.005, 0.015], holdout: [0.01, 0.0, 0.02, 0.01], n_trials: 200, lag: 1,
+     expect: {design_pass: false, holdout_positive: true, holdout_consistent: true, pass: false}}
+  - {id: G32c, doc: "holdout positive but far below design (0.001 < 0.01 - 2 x 0.0000 when the holdout is flat) -> inconsistent, fails",
+     design: [0.01, 0.02, -0.005, 0.015], holdout: [0.001, 0.001, 0.001, 0.001], n_trials: 1, lag: 1,
+     expect: {design_pass: true, holdout_positive: true, holdout_consistent: false, pass: false}}
 sensitivity:
   - {id: G30a, doc: "broad stable region passes", center: 0.10, neighbours: [0.09, 0.08], expect: true}
   - {id: G30b, doc: "isolated spike at the chosen value fails", center: 0.10, neighbours: [0.02, 0.01], expect: false}
   - {id: G30c, doc: "sign flip beside the chosen value fails", center: 0.10, neighbours: [0.09, -0.01], expect: false}
   - {id: G30d, doc: "a pre-registered value need NOT be the peak", center: 0.10, neighbours: [0.13, 0.12], expect: true}
+  - {id: G30e, doc: "r5.5: no cliff (0.06 >= 0.05) but an isolated spike (0.10 > 1.5 x 0.06) fails - the spike rule on its own", center: 0.10, neighbours: [0.06, 0.06], expect: false}
+isin_change:
+  - {id: G33a, doc: "1-for-5 sub-division with a new ISIN (f = 0.2): 101 shares -> 505, entry basis 1000 -> 200, same security_id, buy date and cooldown unchanged; no fraction",
+     position: {security_id: S0001, isin: INE0OLD01011, qty: 101, price_state: {entry_basis: 1000, stop_in_force: 900}, buy_date: 2025-01-10, cooldown_until: null, holding_days: 40},
+     f: 0.2, new_isin: INE0NEW01011, p_cum: 1100,
+     expect: {security_id: S0001, isin: INE0NEW01011, qty: 505, price_state: {entry_basis: 200.0, stop_in_force: 180.0}, buy_date: 2025-01-10, cooldown_until: null, holding_days: 40, cash_in_lieu: 0.0}}
+  - {id: G33b, doc: "the adjusted series continues across the ISIN change: old closes x 0.2, then the new ISIN's closes", closes_old: [1000, 1010], closes_new: [203, 204], f: 0.2,
+     expect: [200.0, 202.0, 203, 204]}
