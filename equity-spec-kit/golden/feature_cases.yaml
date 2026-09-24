@@ -9,7 +9,7 @@ annual_fixture: &Y
   # CE = equity (no debt, leases or cash); TA = 2 x equity; EBIT = pbt. Annual ROCE (FY2 onward): 0.20, 0.20, 0.25, 0.25, 0.30
   - {fy_end: 2021-03-31, revenue: 1000, pbt: 150, tax: 40, pat_owners: 110, finance_costs: 0, other_income: 0, exceptional_net: 0, cfo: 100, total_equity_owners: 1000, borrowings: 0, lease_liabilities: 0, cash_equivalents: 0, total_assets: 2000}
   - {fy_end: 2022-03-31, revenue: 1100, pbt: 200, tax: 50, pat_owners: 150, finance_costs: 0, other_income: 0, exceptional_net: 0, cfo: 140, total_equity_owners: 1000, borrowings: 0, lease_liabilities: 0, cash_equivalents: 0, total_assets: 2000}
-  - {fy_end: 2023-03-31, revenue: 1050, pbt: 200, tax: 50, pat_owners: 150, finance_costs: 0, other_income: 0, exceptional_net: 0, cfo: 140, total_equity_owners: 1000, borrowings: 0, lease_liabilities: 0, cash_equivalents: 0, total_assets: 2000}
+  - {fy_end: 2023-03-31, revenue: 1050, pbt: 200, tax: 50, pat_owners: 150, finance_costs: 0, other_income: 0, exceptional_net: 0, cfo: 90, total_equity_owners: 1000, borrowings: 0, lease_liabilities: 0, cash_equivalents: 0, total_assets: 2000}
   - {fy_end: 2024-03-31, revenue: 1200, pbt: 250, tax: 70, pat_owners: 180, finance_costs: 0, other_income: 0, exceptional_net: 0, cfo: 150, total_equity_owners: 1000, borrowings: 0, lease_liabilities: 0, cash_equivalents: 0, total_assets: 2000}
   - {fy_end: 2025-03-31, revenue: 1300, pbt: 250, tax: 70, pat_owners: 180, finance_costs: 0, other_income: 0, exceptional_net: 0, cfo: 200, total_equity_owners: 1000, borrowings: 0, lease_liabilities: 0, cash_equivalents: 0, total_assets: 2000}
   - {fy_end: 2026-03-31, revenue: 1300, pbt: 300, tax: 60, pat_owners: 240, finance_costs: 0, other_income: 0, exceptional_net: 0, cfo: 210, total_equity_owners: 1000, borrowings: 0, lease_liabilities: 0, cash_equivalents: 0, total_assets: 2000}
@@ -41,19 +41,57 @@ fundamentals:
   - {id: F49, fn: roce_hy_ttm, doc: "TTM EBIT 180; CE 950 now, 850 a year ago -> average 900; TA average 2000 -> 5% is 100; 180 / 900", args: [180, 950, 950, 850, 2000, 2000], expect: {state: known, value: 0.2, cash_rich_capped: false, capped: false}}
   - {id: F50, fn: roce_hy_ttm, doc: "operating loss with average CE 40 <= 100: out of domain (fail), never the cash-rich 1.00", args: [-5, 500, 40, 40, 2000, 2000], expect: {state: out_of_domain, outcome: fail}}
   - {id: F51, fn: market_cap, doc: "raw close x shares usable at the cutoff", args: [250.5, 1000000], expect: {state: known, value: 250500000.0}}
+  - {id: F55, fn: annual_roce, doc: "EBIT = 150 + 30 - 20 - 10 = 150; CE 1200 now (900 + 250 + 100 - 50), 1000 prior (800 + 200 + 100 - 100); average 1100; 5% of average TA 2100 = 105 -> 150 / 1100",
+     years: [{total_equity_owners: 800, borrowings: 200, lease_liabilities: 100, cash_equivalents: 100, total_assets: 2000},
+             {pbt: 150, finance_costs: 30, other_income: 20, exceptional_net: 10, total_equity_owners: 900, borrowings: 250, lease_liabilities: 100, cash_equivalents: 50, total_assets: 2200}],
+     index: 1, expect: {state: known, value: 0.136364, cash_rich_capped: false, capped: false}}
+  - {id: F56, fn: roce_3y_avg, doc: "three FYs cannot give three ROCEs (each needs its prior year)", years: *Y, slice: 3, expect: {state: missing, reason: insufficient history}}
+  - {id: F57, fn: annual_roce, doc: "current-year pbt missing", years: *Y, patch: {1: {pbt: null}}, index: 1, expect: {state: missing}}
+  - {id: F58, fn: annual_roce, doc: "prior-year equity missing", years: *Y, patch: {0: {total_equity_owners: null}}, index: 1, expect: {state: missing}}
+  - {id: F59, fn: roce_5y_trend, doc: "ROCE +0.1, -0.1, +0.1, -0.1, 0: mean exactly 0 -> out of domain (fail)", years: *Y,
+     patch: {1: {pbt: 100}, 2: {pbt: -100}, 3: {pbt: 100}, 4: {pbt: -100}, 5: {pbt: 0}}, expect: {state: out_of_domain, outcome: fail}}
+  - {id: F60, fn: cfo_pat_3y, doc: "cash flow missing in the latest FY", years: *Y, patch: {5: {cfo: null}}, expect: {state: missing}}
+  - {id: F61, fn: earnings_yield_ttm, doc: "only the latest 4 quarters count", args: [[99, 10, 20, 30, 40], 2000], expect: {state: known, value: 0.05}}
+  - {id: F62, fn: exceptional_frequency, doc: "an unknown year -> missing", exceptionals: [0, 0, null, 0, 0], expect: {state: missing}}
+  - {id: F63, fn: ey_vs_own_5y_median, doc: "median unknown -> missing", args: [{state: known, value: 0.06}, {state: out_of_domain, outcome: drop}], expect: {state: missing}}
+  - {id: F64, fn: ey_vs_own_5y_median, doc: "earnings yield exactly 0 -> out of domain (fail)", args: [{state: known, value: 0.0}, {state: known, value: 0.05}], expect: {state: out_of_domain, outcome: fail}}
+  - {id: F96, fn: ey_vs_own_5y_median, doc: "median exactly 0 -> out of domain (fail)", args: [{state: known, value: 0.06}, {state: known, value: 0.0}], expect: {state: out_of_domain, outcome: fail}}
+  - {id: F71, fn: pat_underlying, doc: "pbt exactly 0: removed gross", args: [100, 20, 5, 0], expect: 80.0}
+  - {id: F72, fn: pat_underlying, doc: "etr 0.52 is outside [0, 0.5]: removed gross", args: [100, 20, 52, 100], expect: 80.0}
+  - {id: F73, fn: positive_revenue_growth_years_5y, revenues: [1000, 1100, null, 1200, 1300, 1300], expect: {state: missing}}
+  - {id: F74, fn: positive_revenue_growth_years_5y, doc: "only the latest 6 FYs: the earlier 900 -> 1000 rise is not counted", revenues: [900, 1000, 1100, 1050, 1200, 1300, 1300], expect: {state: known, value: 3}}
+  - {id: F49b, fn: roce_hy_ttm, doc: "CE 1000 now, 800 a year ago: average 900 -> 180 / 900 = 0.2", args: [180, 950, 1000, 800, 2000, 2000], expect: {state: known, value: 0.2, cash_rich_capped: false, capped: false}}
+  - {id: F49c, fn: roce_hy_ttm, doc: "average CE 95 = 5% of average TA 1900 (inclusive) -> cash-rich 1.00", args: [180, 950, 100, 90, 2000, 1800], expect: {state: known, value: 1.0, cash_rich_capped: true, capped: true}}
+  - {id: F49d, fn: roce_hy_ttm, doc: "average CE 100 > 95: computed 1.8 -> universal cap 1.00, not cash-rich", args: [180, 950, 110, 90, 2000, 1800], expect: {state: known, value: 1.0, cash_rich_capped: false, capped: true}}
+  - {id: F49e, fn: roce_hy_ttm, doc: "equity exactly 0 -> fail", args: [180, 0, 950, 850, 2000, 2000], expect: {state: out_of_domain, outcome: fail}}
+  - {id: F49f, fn: roce_hy_ttm, doc: "EBIT exactly 0 with tiny CE -> fail", args: [0, 500, 40, 40, 2000, 2000], expect: {state: out_of_domain, outcome: fail}}
+  - {id: F49g, fn: roce_hy_ttm, doc: "exactly 1.00 (900 / 900) is not capped", args: [900, 950, 950, 850, 2000, 2000], expect: {state: known, value: 1.0, cash_rich_capped: false, capped: false}}
   - {id: F24, fn: promoter_pledge_pct, doc: "no promoter holding: 0.0 (nothing can be pledged), not missing - a professionally managed company must not fail a pledge gate", args: [0, 0], expect: {state: known, value: 0.0, no_promoter: true}}
 
 ey_median:
-  - {id: F25, doc: "1300 sessions: 50 x 0.01, 600 x 0.03, 650 x 0.05. Only the last 1250 count (600 x 0.03, 650 x 0.05); middle pair 625/626 -> 0.05. Ignoring the window would give 0.04",
-     blocks: [[50, 0.01], [600, 0.03], [650, 0.05]], transformative_index: null, expect: {state: known, value: 0.05}}
+  - {id: F25, doc: "1300 sessions: 50 x 0.01, 625 x 0.03, 625 x 0.05. Only the last 1250 count (625/625): median 0.04. All history would give 0.03; a 1251-session window 0.03",
+     blocks: [[50, 0.01], [625, 0.03], [625, 0.05]], transformative_index: null, expect: {state: known, value: 0.04}}
   - {id: F26, doc: "800 known values, the latest transformative ex-date at index 100 -> 699 remain, below 750 -> out of domain (drop)",
      blocks: [[400, 0.04], [400, 0.06]], transformative_index: 100, expect: {state: out_of_domain, outcome: drop}}
+  - {id: F26b, doc: "800 values, transformative ex-date at index 50: indices 0..50 excluded ('on or before') -> 749 < 750 -> drop", blocks: [[400, 0.04], [400, 0.06]], transformative_index: 50, expect: {state: out_of_domain, outcome: drop}}
+  - {id: F26c, doc: "same at index 49: exactly 750 remain (350 x 0.04, 400 x 0.06) -> known, middle pair 375/376 -> 0.06", blocks: [[400, 0.04], [400, 0.06]], transformative_index: 49, expect: {state: known, value: 0.06}}
+  - {id: F26d, doc: "the index is into the full history: 1300 sessions, ex-date at index 549 -> window positions 0..499 excluded, 750 remain -> known", blocks: [[1300, 0.05]], transformative_index: 549, expect: {state: known, value: 0.05}}
   - {id: F27, doc: "800 values, 400 x 0.04 then 400 x 0.06: even count -> mean of the middle pair = 0.05",
      blocks: [[400, 0.04], [400, 0.06]], transformative_index: null, expect: {state: known, value: 0.05}}
 
 ev_ebitda:
   - {id: F28, doc: "own EV 1000 / EBITDA 100 = 10; peers 5..13, median 9 (own excluded) -> 10 / 9", own: 10, peers: [5, 6, 7, 8, 9, 10, 11, 12, 13], expect: {state: known, value: 1.111111}}
   - {id: F29, doc: "two peers with non-positive EBITDA leave 7 valid peers -> drop", own: 10, peers: [5, 6, 7, 8, 9, 10, 11, -1, -1], expect: {state: out_of_domain, outcome: drop}}
+
+  - {id: F65, doc: "own debt, leases and cash enter EV: 900 + 50 + 30 - 80 = 900 over EBITDA 100 = 9; peer median 9 -> 1.0", own: {market_cap: 900, borrowings: 50, lease_liabilities: 30, cash_equivalents: 80, ttm_ebitda: 100}, peers: [5, 6, 7, 8, 9, 10, 11, 12, 13], expect: {state: known, value: 1.0}}
+  - {id: F66, doc: "own EBITDA exactly 0 -> drop", own: {market_cap: 900, borrowings: 0, lease_liabilities: 0, cash_equivalents: 0, ttm_ebitda: 0}, peers: [5, 6, 7, 8, 9, 10, 11, 12, 13], expect: {state: out_of_domain, outcome: drop}}
+  - {id: F67, doc: "in a valuation blackout -> drop", own: 10, peers: [5, 6, 7, 8, 9, 10, 11, 12, 13], blackout: true, expect: {state: out_of_domain, outcome: drop}}
+  - {id: F68, doc: "exactly 8 valid peers is enough: median of 5..12 = 8.5 -> 10 / 8.5", own: 10, peers: [5, 6, 7, 8, 9, 10, 11, 12], expect: {state: known, value: 1.176471}}
+  - {id: F69, doc: "peer median <= 0 (cash-rich peers, EV -900) -> drop", own: 10, peers: [{market_cap: 100, cash_equivalents: 1000, ttm_ebitda: 100}, {market_cap: 100, cash_equivalents: 1000, ttm_ebitda: 100}, {market_cap: 100, cash_equivalents: 1000, ttm_ebitda: 100}, {market_cap: 100, cash_equivalents: 1000, ttm_ebitda: 100}, {market_cap: 100, cash_equivalents: 1000, ttm_ebitda: 100}, {market_cap: 100, cash_equivalents: 1000, ttm_ebitda: 100}, {market_cap: 100, cash_equivalents: 1000, ttm_ebitda: 100}, {market_cap: 100, cash_equivalents: 1000, ttm_ebitda: 100}], expect: {state: out_of_domain, outcome: drop}}
+  - {id: F70, doc: "a peer with EBITDA exactly 0 is not a valid peer", own: 10, peers: [5, 6, 7, 8, 9, 10, 11, 12, 13, {market_cap: 500, ttm_ebitda: 0}], expect: {state: known, value: 1.111111}}
+
+  - {id: F94, doc: "own EBITDA differs from peers': EV 1800 / EBITDA 200 = 9 against median 9 -> 1.0", own: {market_cap: 1800, ttm_ebitda: 200}, peers: [5, 6, 7, 8, 9, 10, 11, 12, 13], expect: {state: known, value: 1.0}}
+  - {id: F95, doc: "peer median exactly 0 (EV 0 for every peer) -> drop", own: 10, peers: [{market_cap: 100, cash_equivalents: 100, ttm_ebitda: 100}, {market_cap: 100, cash_equivalents: 100, ttm_ebitda: 100}, {market_cap: 100, cash_equivalents: 100, ttm_ebitda: 100}, {market_cap: 100, cash_equivalents: 100, ttm_ebitda: 100}, {market_cap: 100, cash_equivalents: 100, ttm_ebitda: 100}, {market_cap: 100, cash_equivalents: 100, ttm_ebitda: 100}, {market_cap: 100, cash_equivalents: 100, ttm_ebitda: 100}, {market_cap: 100, cash_equivalents: 100, ttm_ebitda: 100}], expect: {state: out_of_domain, outcome: drop}}
 
 events:
   - {id: F30, fn: auditor_resignation_5y, doc: "a resignation on 10 Jan 2023 is inside the 5 years to 24 Sep 2026", events: [{kind: resignation, effective_date: 2023-01-10}], cutoff: 2026-09-24, covered: true, expect: {state: known, value: true}}
@@ -78,6 +116,33 @@ flags:
   - {id: F48, fn: flag_auditor_churn, doc: "one resignation plus one mandatory rotation is a single counted change: not set",
      events: [{kind: resignation, effective_date: 2024-02-01}, {kind: rotation, effective_date: 2025-04-01}], cutoff: 2026-09-24, covered: true, expect: false}
 
+  - {id: F75, fn: flag_accrual_high, doc: "assets growing: (pat - cfo) 121, 143, 165 over average assets 1100, 1300, 1500 = 0.11 each -> set",
+     years: [{pat_owners: 0, cfo: 0, total_assets: 1000}, {pat_owners: 221, cfo: 100, total_assets: 1200}, {pat_owners: 243, cfo: 100, total_assets: 1400}, {pat_owners: 265, cfo: 100, total_assets: 1600}], expect: true}
+  - {id: F76, fn: flag_accrual_high, doc: "exactly 0.10 each is not above 0.10",
+     years: [{pat_owners: 0, cfo: 0, total_assets: 1000}, {pat_owners: 210, cfo: 100, total_assets: 1200}, {pat_owners: 230, cfo: 100, total_assets: 1400}, {pat_owners: 250, cfo: 100, total_assets: 1600}], expect: false}
+  - {id: F77, fn: flag_accrual_high, doc: "only the latest 3 FYs: an earlier 0.9 ratio does not count",
+     years: [{pat_owners: 0, cfo: 0, total_assets: 1000}, {pat_owners: 900, cfo: 0, total_assets: 1000}, {pat_owners: 210, cfo: 100, total_assets: 1200}, {pat_owners: 230, cfo: 100, total_assets: 1400}, {pat_owners: 250, cfo: 100, total_assets: 1600}], expect: false}
+  - {id: F78, fn: flag_accrual_high, doc: "three FYs are not enough (each ratio needs its prior year's assets)", years: [{pat_owners: 0, cfo: 0, total_assets: 1000}, {pat_owners: 250, cfo: 100, total_assets: 1000}, {pat_owners: 200, cfo: 100, total_assets: 1000}], expect: null}
+  - {id: F79, fn: flag_auditor_churn, doc: "a change 5.5 years back is outside the window: one counted change, not set",
+     events: [{kind: other, effective_date: 2021-03-01}, {kind: resignation, effective_date: 2024-02-01}], cutoff: 2026-09-24, covered: true, expect: false}
+  - {id: F80, fn: flag_dilution_persistent, doc: "10% dilution is not above 15%", args: [1100, 1000], expect: false}
+  - {id: F97, fn: flag_dilution_persistent, doc: "16% dilution is above 15%", args: [1160, 1000], expect: true}
+  - {id: F98, fn: flag_related_party_large, doc: "10.5% is above 10%", args: [105, 1000, true], expect: [true, true]}
+  - {id: F99, fn: flag_receivables_diverging, doc: "OPM flat in the latest year (0.18 -> 0.18) is not falling", args: [[50, 61, 74], [0.20, 0.18, 0.18]], expect: false}
+  - {id: F81, fn: flag_dilution_persistent, doc: "no share count 5 years ago -> not evaluable", args: [1100, null], expect: null}
+  - {id: F82, fn: flag_inventory_diverging, doc: "days up exactly 25% (40 -> 50) is not above 25%", args: [[40, 50], [100, 120, 130], 500], expect: [true, false]}
+  - {id: F83, fn: flag_inventory_diverging, doc: "growth accelerating (10% -> 18%): not set", args: [[40, 51], [100, 110, 130], 500], expect: [true, false]}
+  - {id: F84, fn: flag_inventory_diverging, doc: "only the latest 2 FYs of days and 3 of revenue are read", args: [[60, 40, 51], [300, 100, 120, 130], 500], expect: [true, true]}
+  - {id: F85, fn: flag_inventory_diverging, doc: "a revenue year unknown -> applicable but not evaluable", args: [[40, 51], [100, null, 130], 500], expect: [true, null]}
+  - {id: F86, fn: flag_promoter_reducing, doc: "a 4-point fall is not more than 5; only the latest 4 filings count (0.70 earlier is ignored)", args: [[0.70, 0.60, 0.59, 0.58, 0.56]], expect: false}
+  - {id: F87, fn: flag_promoter_reducing, args: [[0.60, null, 0.58, 0.56]], expect: null}
+  - {id: F88, fn: flag_receivables_diverging, doc: "the first year's rise is exactly 20% (50 -> 60): not more than 20%, not set", args: [[50, 60, 72.1], [0.20, 0.18, 0.15]], expect: false}
+  - {id: F89, fn: flag_receivables_diverging, doc: "OPM recovers in the latest year: not set", args: [[50, 61, 74], [0.20, 0.18, 0.19]], expect: false}
+  - {id: F90, fn: flag_receivables_diverging, doc: "only the latest 3 FYs are read", args: [[100, 50, 61, 74], [0.10, 0.20, 0.18, 0.15]], expect: true}
+  - {id: F91, fn: flag_receivables_diverging, args: [[50, null, 74], [0.20, 0.18, 0.15]], expect: null}
+  - {id: F92, fn: flag_related_party_large, doc: "5% is not above 10%", args: [50, 1000, true], expect: [true, false]}
+  - {id: F93, fn: flag_related_party_large, doc: "disclosure present but value unknown", args: [null, 1000, true], expect: [true, null]}
+
 states:
   - {id: F52, fn: flag_exceptional_habitual, doc: "3 exceptional years of 5 sets the flag", args: [{state: known, value: 3}], expect: true}
   - {id: F53, fn: flag_related_party_large, doc: "RPT 120 over revenue 1000 = 12% > 10%", args: [120, 1000, true], expect: [true, true]}
@@ -86,6 +151,7 @@ states:
   - {id: F44, fn: surveillance_stage, doc: "after a start without list coverage: missing", on_date: 2019-06-03, starts: {asm_lt: 2018-03-26, gsm: 2017-03-01}, listed: null, covered: false, expect: {state: missing, reason: no_source_coverage}}
   - {id: F45, fn: surveillance_stage, doc: "covered list, security absent from it: none", on_date: 2019-06-03, starts: {asm_lt: 2018-03-26}, listed: null, covered: true, expect: {state: known, value: none}}
   - {id: F46, fn: surveillance_stage, doc: "covered list, listed at ASM short-term stage 1", on_date: 2019-06-03, starts: {asm_lt: 2018-03-26}, listed: asm_st_1, covered: true, expect: {state: known, value: asm_st_1}}
+  - {id: F75b, fn: surveillance_stage, doc: "ON the framework's start date it exists: without coverage, missing", on_date: 2018-03-26, starts: {asm_lt: 2018-03-26}, listed: null, covered: false, expect: {state: missing, reason: no_source_coverage}}
   - {id: F47, fn: is_fno_eligible, args: [true, false], expect: {state: missing, reason: no_source_coverage}}
   - {id: F47b, fn: is_fno_eligible, args: [false, true], expect: {state: known, value: false}}
 
@@ -115,4 +181,24 @@ prices:
   - {id: P20, fn: atr_pct_20, doc: "3 absent of the last 20: 17 < 18 -> out of domain (drop)", series: {n: 21, adj_close: {const: 100}, adj_high: {offset: 1}, adj_low: {offset: -1}, absent: [3, 4, 5]}, expect: {state: out_of_domain, outcome: drop}}
   - {id: P21, fn: circuit_days_60d, doc: "3 closes at a band in 60 covered sessions", bands: {n: 60, closed: [4, 30, 59]}, expect: {state: known, value: 3}}
   - {id: P22, fn: circuit_days_60d, doc: "one uncovered session -> missing", bands: {n: 60, closed: [4], uncovered: [10]}, expect: {state: missing, reason: no_source_coverage}}
+  - {id: P07b, fn: vol_adj, doc: "volatility unknown -> missing", args: [{state: known, value: 0.5}, {state: out_of_domain, outcome: drop}], expect: {state: missing}}
+  - {id: P24, fn: adv_20d_cr, doc: "window is 20 sessions (an earlier Rs 5,000 cr day is ignored); exactly 15 present is enough", series: {n: 21, traded_value: {const: 500000000, set: {0: 50000000000}}, absent: [1, 2, 3, 4, 5]}, expect: {state: known, value: 50.0}}
+  - {id: P25, fn: atr_pct_20, doc: "a 20-session history: the first bar has no prior (range only); gap at t -> (19 x 2 + 11) / 20 / 110",
+     series: {n: 20, adj_close: {const: 100, set: {19: 110}}, adj_high: {offset: 1}, adj_low: {offset: -1}}, expect: {state: known, value: 0.022273}}
+  - {id: P26, fn: atr_pct_20, doc: "zero range every day -> 0 -> out of domain (drop)", series: {n: 21, adj_close: {const: 100}, adj_high: {offset: 0}, adj_low: {offset: 0}}, expect: {state: out_of_domain, outcome: drop}}
+  - {id: P27, fn: atr_pct_20, doc: "after an absent session the true range is high - low", series: {n: 21, adj_close: {const: 100}, adj_high: {offset: 1}, adj_low: {offset: -1}, absent: [10]}, expect: {state: known, value: 0.02}}
+  - {id: P28, fn: atr_pct_20, doc: "exactly 18 present of 20 is enough", series: {n: 21, adj_close: {const: 100}, adj_high: {offset: 1}, adj_low: {offset: -1}, absent: [3, 4]}, expect: {state: known, value: 0.02}}
+  - {id: P29, fn: circuit_days_60d, doc: "only the last 60 sessions: an uncovered 61st-back session does not matter", bands: {n: 61, closed: [5], uncovered: [0]}, expect: {state: known, value: 1}}
+  - {id: P30, fn: delivery_pct_20d_avg, doc: "window 20: an earlier 100%-delivery day is ignored; 16 usable days", series: {n: 21, volume: {const: 1000000}, delivery_qty: {const: 400000, set: {0: 1000000, 1: null, 2: null, 3: null, 4: null}}}, expect: {state: known, value: 0.4}}
+  - {id: P31, fn: delivery_pct_20d_avg, doc: "exactly 15 usable days is enough", series: {n: 20, volume: {const: 1000000}, delivery_qty: {const: 400000, set: {0: null, 1: null, 2: null, 3: null, 4: null}}}, expect: {state: known, value: 0.4}}
+  - {id: P32, fn: delivery_pct_20d_avg, doc: "a zero-volume day is not usable: 14 -> missing", series: {n: 20, volume: {const: 1000000, set: {6: 0}}, delivery_qty: {const: 400000, set: {0: null, 1: null, 2: null, 3: null, 4: null, 6: 0}}}, expect: {state: missing}}
+  - {id: P33, fn: price_vs_dma200, doc: "exactly 180 present (closes 1..20 absent): mean 110.5 -> 200 / 110.5", series: {n: 200, adj_close: {linear: [1, 1]}, absent: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]}, expect: {state: known, value: 1.809955}}
+  - {id: P34, fn: price_vs_dma200, doc: "window 200 of 201 closes (2..201, mean 101.5)", series: {n: 201, adj_close: {linear: [1, 1]}}, expect: {state: known, value: 1.980296}}
+  - {id: P35, fn: realised_vol_60d, doc: "exactly 54 returns (3 isolated absences each remove one + and one -): ln1.1 x sqrt(54/53) x sqrt(250)", series: {n: 61, adj_close: {alt: [100, 110]}, absent: [10, 20, 30]}, expect: {state: known, value: 1.521137}}
+  - {id: P36, fn: realised_vol_60d, doc: "flat prices: zero volatility -> out of domain (drop)", series: {n: 61, adj_close: {const: 100}}, expect: {state: out_of_domain, outcome: drop}}
+  - {id: P37, fn: realised_vol_60d, doc: "window: the 62nd-back close (200) is outside; same as P05", series: {n: 62, adj_close: {alt: [110, 100], set: {0: 200}}}, expect: {state: known, value: 1.519704}}
+  - {id: P38, fn: realised_vol_1y, doc: "exactly 225 returns (t absent removes 1; 12 interior absences remove 24): 113 up, 112 down; sample sd x sqrt(250) = 1.510331",
+     series: {n: 251, adj_close: {alt: [100, 110]}, absent: [20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 250]}, expect: {state: known, value: 1.510331}}
+  - {id: P39, fn: realised_vol_1y, doc: "window: a 252nd-back outlier close is outside; same as P06b", series: {n: 252, adj_close: {alt: [110, 100], set: {0: 500}}}, expect: {state: known, value: 1.510009}}
+  - {id: P40, fn: market_breadth, doc: "exactly 1.0 is not above its 200-day average", args: [[{state: known, value: 1.0}, {state: known, value: 1.2}]], expect: {state: known, value: 0.5}}
   - {id: P23, fn: market_breadth, args: [[{state: known, value: 1.1}, {state: known, value: 0.9}, {state: known, value: 1.2}, {state: missing}]], expect: {state: known, value: 0.666667}}

@@ -3,7 +3,7 @@ code: ltqv_v1
 strategy_class: fundamental_long_term
 version: 1.0.0-prevalidation.8
 lineage: {code: ltqv, derived_from: []}
-registry: {version: 3.0.0, closure_sha256: d8552f524503fa35d79a0878f6da147a83fe7ac74d98417a5bad54305b35beb0}
+registry: {version: 3.0.0, closure_sha256: 48d0ce47e8061018039d278017f1785571fac1867bcc9449dd711bda53d294ba}
 
 hypothesis: >
   Businesses that earn high and stable returns on capital, convert profits

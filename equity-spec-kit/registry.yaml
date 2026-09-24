@@ -39,7 +39,7 @@ enums:
 # is reference_engine.py, fixed by golden/card_cases.yaml.
 evaluation_semantics:
   version: 1.0.0
-  arithmetic: "Decimal. Features, literals and thresholds are compared exactly; no floating-point comparison"
+  arithmetic: "Decimal. Gate, exit and filter inputs are quantised to 9 decimal places (ROUND_HALF_EVEN), then compared exactly with the card's literals: two feature builds that differ only by floating-point summation order (0.6999999999999998 vs 0.7000000000000001) reach the same decision"
   non_known: "missing, stale, conflicted and not_applicable are 'non-known'. out_of_domain resolves by the feature's declared outcome"
   gates: >-
     Resolution per gate, in order: (1) a non-known input whose effective unknown behaviour is fail -> FAIL;

@@ -2,7 +2,7 @@
  "transition_id": "0001-ltqv_v1-1.0.0-prevalidation.8",
  "strategy_code": "ltqv_v1",
  "lineage": "ltqv",
- "card_sha256": "401660a7d5ccb805c12bdac6cc4ffdbea8413a96ac00cfe4990bde6d02f34546",
+ "card_sha256": "a3023cc488c046bf9bbe7c803fc3a93918f1bf86bce66e29b1b2e02c404b91da",
  "from_status": "none",
  "to_status": "experimental",
  "decided_by": "claude (r5.5 re-pin, for Harsh to confirm)",

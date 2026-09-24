@@ -57,10 +57,12 @@ def _years(c):
     ys = [dict(y) for y in c["years"]]
     for i, patch in (c.get("patch") or {}).items():
         ys[i].update(patch)
-    return ys
+    return ys[:c["slice"]] if c.get("slice") else ys
 
 
 def _peer(r):
+    if isinstance(r, dict):
+        return {"market_cap": 0, "borrowings": 0, "lease_liabilities": 0, "cash_equivalents": 0, **r}
     return {"market_cap": abs(r) * 100, "borrowings": 0, "lease_liabilities": 0, "cash_equivalents": 0,
             "ttm_ebitda": 100 if r > 0 else -100}
 
@@ -68,7 +70,9 @@ def _peer(r):
 def cases():
     for c in G["fundamentals"]:
         fn = getattr(F, c["fn"])
-        if "years" in c:
+        if c["fn"] == "annual_roce":
+            got = fn(_years(c), c["index"])
+        elif "years" in c:
             got = fn(_years(c))
         elif "revenues" in c:
             got = fn(c["revenues"])
@@ -81,7 +85,7 @@ def cases():
         daily = [{"ey": v, "blackout": False} for n, v in c["blocks"] for _ in range(n)]
         yield c["id"], F.ey_median_5y(daily, c["transformative_index"]), c["expect"]
     for c in G["ev_ebitda"]:
-        yield c["id"], F.ev_ebitda_vs_sector(_peer(c["own"]), [_peer(p) for p in c["peers"]]), c["expect"]
+        yield c["id"], F.ev_ebitda_vs_sector(_peer(c["own"]), [_peer(p) for p in c["peers"]], c.get("blackout", False)), c["expect"]
     for c in G["events"]:
         yield c["id"], F.auditor_resignation_5y(c["events"], c["cutoff"], c["covered"]), c["expect"]
     for c in G["flags"]:
@@ -119,7 +123,7 @@ def cases():
 
 # every feature a card reads, and the golden function(s) that fix it (audit B8: coverage is checked, not claimed)
 CARD_FEATURE_TO_FN = {
-    "operating_history_years": ["operating_history_years"], "roce_3y_avg": ["roce_3y_avg"], "roce_hy_ttm": ["roce_hy_ttm"],
+    "operating_history_years": ["operating_history_years"], "roce_3y_avg": ["roce_3y_avg", "annual_roce"], "roce_hy_ttm": ["roce_hy_ttm"],
     "roce_5y_trend": ["roce_5y_trend"], "roce_stability": ["roce_stability"], "cfo_pat_3y": ["cfo_pat_3y"],
     "debt_equity": ["debt_equity"], "interest_coverage": ["interest_coverage"],
     "positive_revenue_growth_years_5y": ["positive_revenue_growth_years_5y"], "exceptional_frequency": ["exceptional_frequency"],
@@ -203,6 +207,8 @@ def _mutants():
 
     def growth_counts_flat_years(revenues):
         r = revenues[-6:]
+        if len(r) < 6 or any(v is None for v in r):
+            return F.MISSING()
         return F.K(sum(1 for a, b in zip(r, r[1:]) if b >= a))
 
     def history_counts_all_years(years):

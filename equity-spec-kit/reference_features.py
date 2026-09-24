@@ -35,6 +35,21 @@ def known(x):
     return isinstance(x, dict) and x.get("state") == "known"
 
 
+def _q(x):
+    """evaluation_semantics.arithmetic applies inside forensic flags too: quantise to 9 dp, then compare exactly,
+    so (0.1 + 0.1 + 0.1) / 3 is 0.10, not 0.10000000000000002 > 0.10."""
+    import decimal
+    return decimal.Decimal(repr(float(x))).quantize(decimal.Decimal("1e-9"), rounding=decimal.ROUND_HALF_EVEN)
+
+
+def gt(a, b):
+    return _q(a) > _q(b)
+
+
+def lt(a, b):
+    return _q(a) < _q(b)
+
+
 # ------------------------------------------------------------------ fundamentals
 def ebit_underlying(y):
     return y["pbt"] + y["finance_costs"] - y["other_income"] - y["exceptional_net"]
@@ -232,8 +247,7 @@ def auditor_resignation_5y(events, cutoff_date, coverage_complete_for_window):
 
 # ------------------------------------------------------------------ forensic flags
 def flag_accrual_high(years):
-    last = years[-3:]
-    if len(last) < 3 or len(years) < 4:
+    if len(years) < 4:
         return None
     ratios = []
     for i in range(len(years) - 3, len(years)):
@@ -241,7 +255,7 @@ def flag_accrual_high(years):
         if any(v is None for v in (y.get("pat_owners"), y.get("cfo"), y.get("total_assets"), p.get("total_assets"))):
             return None
         ratios.append((y["pat_owners"] - y["cfo"]) / ((y["total_assets"] + p["total_assets"]) / 2))
-    return sum(ratios) / 3 > 0.10
+    return gt(sum(ratios) / 3, 0.10)
 
 
 def flag_receivables_diverging(receivable_days, opm):
@@ -249,18 +263,18 @@ def flag_receivables_diverging(receivable_days, opm):
     rd, om = receivable_days[-3:], opm[-3:]
     if len(rd) < 3 or len(om) < 3 or any(v is None for v in rd + om):
         return None
-    return all(rd[i] > 1.20 * rd[i - 1] and om[i] < om[i - 1] for i in (1, 2))
+    return all(gt(rd[i], 1.20 * rd[i - 1]) and lt(om[i], om[i - 1]) for i in (1, 2))
 
 
 def flag_inventory_diverging(inventory_days, revenues, inventory_latest):
     """Applicable only if inventory > 0 at the latest FY end. Returns (applicable, value)."""
-    if not inventory_latest or inventory_latest <= 0:
+    if inventory_latest is None or inventory_latest <= 0:
         return False, None
     idays, rev = inventory_days[-2:], revenues[-3:]
     if len(idays) < 2 or len(rev) < 3 or any(v is None for v in idays + rev):
         return True, None
     g_now, g_prev = rev[2] / rev[1] - 1, rev[1] / rev[0] - 1
-    return True, idays[1] > 1.25 * idays[0] and g_now < g_prev
+    return True, gt(idays[1], 1.25 * idays[0]) and lt(g_now, g_prev)
 
 
 def flag_exceptional_habitual(exc_freq):
@@ -270,7 +284,7 @@ def flag_exceptional_habitual(exc_freq):
 def flag_dilution_persistent(shares_now, shares_5y_ago):
     if shares_now is None or not shares_5y_ago:
         return None
-    return shares_now / shares_5y_ago - 1 > 0.15
+    return gt(shares_now / shares_5y_ago - 1, 0.15)
 
 
 def flag_auditor_churn(events, cutoff_date, coverage_complete_for_window):
@@ -287,7 +301,7 @@ def flag_related_party_large(rpt_total, revenue, disclosure_present):
         return False, None
     if rpt_total is None or not revenue:
         return True, None
-    return True, rpt_total / revenue > 0.10
+    return True, gt(rpt_total / revenue, 0.10)
 
 
 def flag_promoter_reducing(promoter_holdings_last4):
@@ -295,7 +309,7 @@ def flag_promoter_reducing(promoter_holdings_last4):
     h = promoter_holdings_last4[-4:]
     if len(h) < 4 or any(v is None for v in h):
         return None
-    return h[0] - h[3] > 0.05
+    return gt(h[0] - h[3], 0.05)
 
 
 def forensic_count_and_coverage(flags):
@@ -451,4 +465,4 @@ def circuit_days_60d(band_states):
 
 def market_breadth(dma200_values):
     k = [v for v in dma200_values if known(v)]
-    return MISSING() if not k else K(round(sum(1 for v in k if v["value"] > 1) / len(k), 6))
+    return MISSING() if not k else K(round(sum(1 for v in k if gt(v["value"], 1)) / len(k), 6))

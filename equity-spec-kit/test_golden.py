@@ -30,6 +30,11 @@ def close(a, b, tol=1e-6):
     return math.isclose(a, b, abs_tol=tol)
 
 
+def _rolling(c):
+    x = c.get("series") or [c["series_spec"]["repeat"][0]] * c["series_spec"]["repeat"][1] + c["series_spec"]["then"]
+    return R.rolling_alpha_share(x) if c["window"] is None else R.rolling_alpha_share(x, c["window"])
+
+
 def cases():
     for c in G["fills"]:
         yield c["id"], R.fill_buy_limit(c["limit"], c["open"], c["upper_band"]), c["expect"], 1e-9
@@ -114,16 +119,21 @@ def cases():
                R.sharpe_annualised(c["series"]) if k == "sharpe" else
                R.newey_west_se(c["series"], c["lag"]) if k == "newey_west" else
                R.nw_tstat(c["series"], c["lag"]) if k == "nw_tstat" else
-               R.rolling_alpha_share(c["series"], c["window"]) if k == "rolling_share" else
+               _rolling(c) if k == "rolling_share" else
                R.max_drawdown(c["series"]) if k == "max_drawdown" else
                R.promotion_hurdle(c["n_trials"]) if k == "hurdle" else
                R.turnover(c["total_traded_value"], c["average_portfolio_value"], c["years"]))
         yield c["id"], got, c["expect"], c["tol"]
     for c in G["promotion"]:
-        d = R.promotion_decision(c["design"], c["holdout"], c["n_trials"], c["lag"])
+        d = (R.promotion_decision(c["design"], c["holdout"], c["n_trials"]) if c["lag"] is None
+             else R.promotion_decision(c["design"], c["holdout"], c["n_trials"], c["lag"]))
         yield c["id"], {k: d[k] for k in c["expect"]}, c["expect"], 0
     for c in G["sensitivity"]:
         yield c["id"], R.sensitivity_ok(c["center"], c["neighbours"]), c["expect"], 0
+    import inspect
+    for c in G["defaults"]:
+        prm = inspect.signature(getattr(R, c["function"])).parameters.get(c["parameter"])
+        yield c["id"], (prm.default if prm is not None else None), c["expect"], 1e-15
     for c in G["isin_change"]:
         got = (R.carry_isin_change(c["position"], c["f"], c["new_isin"], c["p_cum"]) if "position" in c
                else R.stitch_across_isin(c["closes_old"], c["closes_new"], c["f"]))

@@ -2,7 +2,7 @@
  "transition_id": "0002-mom_v1-1.0.0-prevalidation.8",
  "strategy_code": "mom_v1",
  "lineage": "mom",
- "card_sha256": "3297a6f01c93f83b0f9f8376b7d1dc98428e24af666a0959437f91369cad3bf5",
+ "card_sha256": "8539db7765b8e5b51ca2de9ae1b88a6e8f6f63413b87b6903e59a67be4f8cc84",
  "from_status": "none",
  "to_status": "experimental",
  "decided_by": "claude (r5.5 re-pin, for Harsh to confirm)",

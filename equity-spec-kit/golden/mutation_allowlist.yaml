@@ -1,0 +1,406 @@
+# Equivalent mutants accepted by mutation_check.py (audit C1). Each entry was reviewed by hand; the reason says why
+# no golden case can distinguish the mutant from the original. A NEW survivor is a missing golden case: add the case,
+# never an entry here without a reason that holds up.
+equivalent_mutants:
+- module: reference_features
+  function: _ret
+  kind: const
+  line: return MISSING() if a is None or b is None else K(round(a / b - 1, 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: adv_20d_cr
+  kind: const
+  line: return K(round(sum(b["traded_value"] for b in w) / len(w) / 1e7, 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: atr_pct_20
+  kind: const
+  line: return K(round(v, 6)) if v > 0 else OOD("drop")
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: debt_equity
+  kind: const
+  line: return K(round((borrowings + lease_liabilities) / equity, 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: delivery_pct_20d_avg
+  kind: const
+  line: return K(round(sum(b["delivery_qty"] for b in w) / sum(b["volume"] for b in w), 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: earnings_yield_spread
+  kind: const
+  line: return K(round(ey - gsec_10y, 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: earnings_yield_ttm
+  kind: const
+  line: return K(round(sum(q) / mcap, 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: ev_ebitda_vs_sector
+  kind: const
+  line: return K(round(_ev_ebitda(own) / med, 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: ey_median_5y
+  kind: const
+  line: return K(round(statistics.median(vals), 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: ey_vs_own_5y_median
+  kind: const
+  line: return K(round(ey["value"] / median["value"], 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: forensic_count_and_coverage
+  kind: const
+  line: return K(sum(1 for v in evaluable if v)), K(round(cov, 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: interest_coverage
+  kind: const
+  line: return K(round(min(ttm_ebit / ttm_finance_costs, 100.0), 6), no_finance_cost=False)
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: market_breadth
+  kind: const
+  line: return MISSING() if not k else K(round(sum(1 for v in k if gt(v["value"], 1)) / len(k), 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: price_vs_dma
+  kind: const
+  line: return K(round(series[-1]["adj_close"] / (sum(w) / len(w)), 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: promoter_pledge_pct
+  kind: const
+  line: return K(round(pledged_shares / promoter_shares, 6), no_promoter=False)
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: realised_vol
+  kind: const
+  line: return K(round(v, 6)) if v > 0 else OOD("drop")
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: rel_strength_6m_vs_nifty200_tri
+  kind: const
+  line: return K(round(a / b - c / d, 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: roce_3y_avg
+  kind: const
+  line: return bad or K(round(sum(vals) / 3, 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: roce_5y_trend
+  kind: bin
+  line: slope = sum((x - 3) * (v - mean) for x, v in zip(xs, vals)) / sum((x - 3) ** 2 for x in xs)
+  count: 2
+  reason: 'OLS slope numerator: sum(x-3) = 0 and sum(v-mean) = 0, so shifting either factor by a constant leaves the slope unchanged'
+- module: reference_features
+  function: roce_5y_trend
+  kind: const
+  line: return K(round(slope / mean, 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: roce_5y_trend
+  kind: const
+  line: slope = sum((x - 3) * (v - mean) for x, v in zip(xs, vals)) / sum((x - 3) ** 2 for x in xs)
+  count: 1
+  reason: 'OLS slope numerator: sum(x-3) = 0 and sum(v-mean) = 0, so shifting either factor by a constant leaves the slope unchanged'
+- module: reference_features
+  function: roce_hy_ttm
+  kind: const
+  line: return K(round(min(v, 1.0), 6), cash_rich_capped=False, capped=v > 1.0)
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: roce_stability
+  kind: const
+  line: return K(round(1 / (1 + statistics.pstdev(vals)), 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_features
+  function: vol_adj
+  kind: const
+  line: return K(round(ret["value"] / vol["value"], 6))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: _tax_multi_year
+  kind: bin
+  line: ex0 = _regime(schedule, dt.date(fy + 1, 3, 31)).get("ltcg_exemption_per_fy") or 0
+  count: 1
+  reason: planted-defect hook for R5.9, active only when _exempt_before_setoff=True
+- module: reference_sim
+  function: _tax_multi_year
+  kind: bin
+  line: lt = max(lt - ex0, 0.0) if lt > 0 else lt
+  count: 1
+  reason: planted-defect hook for R5.9, active only when _exempt_before_setoff=True
+- module: reference_sim
+  function: _tax_multi_year
+  kind: bool
+  line: ex0 = _regime(schedule, dt.date(fy + 1, 3, 31)).get("ltcg_exemption_per_fy") or 0
+  count: 1
+  reason: planted-defect hook for R5.9, active only when _exempt_before_setoff=True
+- module: reference_sim
+  function: _tax_multi_year
+  kind: cmp
+  line: 'if gain > 0 and v["amount"] < 0:'
+  count: 2
+  reason: 'a zero amount changes nothing: a zero set-off, or a zero vintage that carries nothing'
+- module: reference_sim
+  function: _tax_multi_year
+  kind: cmp
+  line: 'if lt < 0:'
+  count: 1
+  reason: 'a zero amount changes nothing: a zero set-off, or a zero vintage that carries nothing'
+- module: reference_sim
+  function: _tax_multi_year
+  kind: cmp
+  line: 'if st < 0:'
+  count: 1
+  reason: 'a zero amount changes nothing: a zero set-off, or a zero vintage that carries nothing'
+- module: reference_sim
+  function: _tax_multi_year
+  kind: cmp
+  line: lt = max(lt - ex0, 0.0) if lt > 0 else lt
+  count: 1
+  reason: planted-defect hook for R5.9, active only when _exempt_before_setoff=True
+- module: reference_sim
+  function: _tax_multi_year
+  kind: cmp
+  line: vint = [v for v in vint if v["amount"] < 0]
+  count: 1
+  reason: 'a zero amount changes nothing: a zero set-off, or a zero vintage that carries nothing'
+- module: reference_sim
+  function: _tax_multi_year
+  kind: const
+  line: '"carried_lt_loss": round(sum(v["amount"] for v in vint if v["kind"] == "lt"), 2),'
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: _tax_multi_year
+  kind: const
+  line: '"carried_st_loss": round(sum(v["amount"] for v in vint if v["kind"] == "st"), 2),'
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: _tax_multi_year
+  kind: const
+  line: '"tax_before_cess": round(tax, 2), "tax_with_cess": round(tax * (1 + cess), 2)})'
+  count: 2
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: _tax_multi_year
+  kind: const
+  line: ex0 = _regime(schedule, dt.date(fy + 1, 3, 31)).get("ltcg_exemption_per_fy") or 0
+  count: 2
+  reason: planted-defect hook for R5.9, active only when _exempt_before_setoff=True
+- module: reference_sim
+  function: _tax_multi_year
+  kind: const
+  line: 'out.append({"fy": fy, "stcg": round(net_st, 2), "ltcg": round(net_lt, 2),'
+  count: 2
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: cfo_pat
+  kind: const
+  line: 'return {"state": "known", "value": round(sum_cfo / sum_pat, 6)}'
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: demerger
+  kind: const
+  line: '"cash_in_lieu": round((entitled - whole) * implied, 2)}'
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: demerger
+  kind: const
+  line: '"stub_value": round(whole * implied, 2), "stub_implied_per_share": round(implied, 4),'
+  count: 2
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: demerger
+  kind: const
+  line: 'return {"f": round(p_discovered / p_cum, 6), "parent_qty": parent_qty, "stub_qty": whole,'
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: demerger
+  kind: const
+  line: whole = math.floor(entitled + 1e-9)
+  count: 1
+  reason: numerical epsilon guarding floor()/round() against representation error; equivalent at every fixture
+- module: reference_sim
+  function: fill_sell_on_open
+  kind: const
+  line: return round(s["open"] * (1 - h), 4), delayed
+  count: 2
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: period_panel_as_of
+  kind: cmp
+  line: 'if k not in best or r["version"] > best[k]["version"]:'
+  count: 1
+  reason: versions are unique per (isin, basis, fact, period) - a duplicate is an integrity failure upstream - so > and >= agree
+- module: reference_sim
+  function: promotion_decision
+  kind: cmp
+  line: '"pass": t >= h and mu_h > 0 and consistent}'
+  count: 1
+  reason: exact float equality at the boundary (t = hurdle; mean = design mean - 2 SE) is not representable
+- module: reference_sim
+  function: promotion_decision
+  kind: cmp
+  line: consistent = mu_h >= mu_d - 2 * se_h
+  count: 1
+  reason: exact float equality at the boundary (t = hurdle; mean = design mean - 2 SE) is not representable
+- module: reference_sim
+  function: promotion_decision
+  kind: cmp
+  line: 'return {"design_t": round(t, 6), "hurdle": round(h, 6), "design_pass": t >= h, "holdout_positive": mu_h > 0,'
+  count: 1
+  reason: exact float equality at the boundary (t = hurdle; mean = design mean - 2 SE) is not representable
+- module: reference_sim
+  function: rank_order
+  kind: cmp
+  line: 'while i < len(out):'
+  count: 1
+  reason: 'loop bounds: the extra iteration sorts an empty slice; the exact-tolerance float equality is not representable'
+- module: reference_sim
+  function: rank_order
+  kind: cmp
+  line: 'while j + 1 < len(out) and abs(out[j + 1]["score"] - out[i]["score"]) <= tol:'
+  count: 1
+  reason: 'loop bounds: the extra iteration sorts an empty slice; the exact-tolerance float equality is not representable'
+- module: reference_sim
+  function: rights_value
+  kind: cmp
+  line: f = terp / p_cum if S < p_cum else 1.0
+  count: 1
+  reason: at S = P_cum, TERP = P_cum so f = 1 on either branch
+- module: reference_sim
+  function: rights_value
+  kind: const
+  line: ent = math.floor(held * a / b + 1e-9)
+  count: 1
+  reason: numerical epsilon guarding floor()/round() against representation error; equivalent at every fixture
+- module: reference_sim
+  function: rights_value
+  kind: const
+  line: 'return {"terp": round(terp, 4), "f": round(f, 6), "entitlements": ent, "value": round(ent * per, 2)}'
+  count: 2
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: roce
+  kind: const
+  line: 'return {"state": "known", "value": round(min(v, 1.0), 6), "cash_rich_capped": False, "capped": v > 1.0}'
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: rolling_alpha_share
+  kind: bin
+  line: return sum(1 for w in wins if sum(w) / len(w) > 0) / len(wins) if wins else None
+  count: 1
+  reason: sum/len > 0 and sum*len > 0 have the same sign
+- module: reference_sim
+  function: run_stop
+  kind: const
+  line: tested.append(round(stop, 4))
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: sensitivity_ok
+  kind: cmp
+  line: no_spike = abs(center) <= spike_ratio * abs(mean_n)
+  count: 1
+  reason: exact float equality at the spike boundary, and the sign convention for a zero centre or neighbour (any zero neighbour already fails the cliff rule)
+- module: reference_sim
+  function: sensitivity_ok
+  kind: cmp
+  line: same_sign = all((n > 0) == (center > 0) for n in neighbours)
+  count: 2
+  reason: exact float equality at the spike boundary, and the sign convention for a zero centre or neighbour (any zero neighbour already fails the cliff rule)
+- module: reference_sim
+  function: split_bonus
+  kind: const
+  line: '"cash_in_lieu": round(frac * p_cum * f, 2)}'
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: split_bonus
+  kind: const
+  line: 'return {"qty": whole, "price_state": {k: round(v * f, 4) for k, v in price_state.items()},'
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: split_bonus
+  kind: const
+  line: whole = math.floor(new_qty_exact + 1e-9)
+  count: 1
+  reason: numerical epsilon guarding floor()/round() against representation error; equivalent at every fixture
+- module: reference_sim
+  function: stitch_across_isin
+  kind: const
+  line: return [round(c * f, 4) for c in closes_old] + list(closes_new)
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: tax_view
+  kind: cmp
+  line: 'if st < 0:'
+  count: 1
+  reason: 'a zero amount changes nothing: a zero set-off, or a zero vintage that carries nothing'
+- module: reference_sim
+  function: tax_view
+  kind: const
+  line: '"tax_before_cess": round(tax, 2), "tax_with_cess": round(tax * (1 + cess), 2)}'
+  count: 2
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: tax_view
+  kind: const
+  line: 'return {"stcg": round(st, 2), "ltcg": round(lt, 2), "taxable_ltcg": round(taxable_lt, 2),'
+  count: 3
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_sim
+  function: tax_year
+  kind: bool
+  line: key = (reg["stcg_rate"], reg["ltcg_rate"], reg.get("ltcg_exemption_per_fy") or 0)
+  count: 1
+  reason: the exemption in the bucket key only groups buckets; the exemption applied is the FY-end one
+- module: reference_sim
+  function: trade_costs
+  kind: bin
+  line: 'r2 = lambda x: round(x + 1e-12, 2)'
+  count: 1
+  reason: numerical epsilon guarding floor()/round() against representation error; equivalent at every fixture
+- module: reference_sim
+  function: trade_costs
+  kind: const
+  line: 'r2 = lambda x: round(x + 1e-12, 2)'
+  count: 1
+  reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'

@@ -545,7 +545,7 @@ def promotion_decision(design_excess, holdout_excess, n_trials, lag=6):
     se_h = newey_west_se(holdout_excess, min(lag, len(holdout_excess) - 1))
     consistent = mu_h >= mu_d - 2 * se_h
     return {"design_t": round(t, 6), "hurdle": round(h, 6), "design_pass": t >= h, "holdout_positive": mu_h > 0,
-            "holdout_consistent": consistent, "min_detectable_alpha": round(h * se_d * 12, 6),
+            "holdout_consistent": consistent, "holdout_se": round(se_h, 6), "min_detectable_alpha": round(h * se_d * 12, 6),
             "pass": t >= h and mu_h > 0 and consistent}
 
 

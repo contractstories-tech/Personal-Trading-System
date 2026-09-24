@@ -1,0 +1,102 @@
+# Card-level golden cases (audit A1, A2, A3, C2). The engine evaluates the CARD's own expressions, so these fail
+# when a card's meaning changes - r5.4's goldens could not see a card at all. Feature shorthand: a bare value is
+# {state: known, value: v}; otherwise give the state dict. Hand-derived answers are in each doc.
+
+gates:
+  - {id: C01, card: mom_v1, gate: G1, doc: "ADV exactly 25 crore passes (>=); 24.99 fails", features: {adv_20d_cr: 25}, expect: PASS}
+  - {id: C01b, card: mom_v1, gate: G1, features: {adv_20d_cr: 24.99}, expect: FAIL}
+  - {id: C02, card: ltqv_v1, gate: G2, doc: "ROCE 15% passes", features: {roce_3y_avg: 0.15}, expect: PASS}
+  - {id: C02b, card: ltqv_v1, gate: G2, doc: "ROCE 10% fails (a card edited to a 5% threshold would pass it)", features: {roce_3y_avg: 0.10}, expect: FAIL}
+  - {id: C03, card: ltqv_v1, gate: G3, features: {cfo_pat_3y: 0.70}, expect: PASS}
+  - {id: C03b, card: ltqv_v1, gate: G3, features: {cfo_pat_3y: 0.69}, expect: FAIL}
+  - {id: C04, card: ltqv_v1, gate: G4, doc: "coverage 7 >= 6 carries debt/equity 1.5", features: {interest_coverage: 7, debt_equity: 1.5}, expect: PASS}
+  - {id: C04b, card: ltqv_v1, gate: G4, doc: "coverage 3 with debt/equity 1.5 fails", features: {interest_coverage: 3, debt_equity: 1.5}, expect: FAIL}
+  - {id: C04c, card: ltqv_v1, gate: G4, doc: "negative equity: debt/equity out of domain (fail) fails the gate even with coverage 7", features: {interest_coverage: 7, debt_equity: {state: out_of_domain, outcome: fail}}, expect: FAIL}
+  - {id: C05, card: ltqv_v1, gate: G4, doc: "debt/equity missing, default behaviour exclude -> EXCLUDED, never evaluated by OR", features: {interest_coverage: 7, debt_equity: {state: missing}}, expect: EXCLUDED}
+  - {id: C06, card: ltqv_v1, gate: G5, doc: "pledge missing, card override fail -> FAIL", features: {promoter_pledge_pct: {state: missing}}, expect: FAIL}
+  - {id: C07, card: ltqv_v1, gate: G2, doc: "a STALE material input is non-known: exclude -> EXCLUDED (r5.4 left stale undefined)", features: {roce_3y_avg: {state: stale, value: 0.30}}, expect: EXCLUDED}
+  - {id: C08, card: mom_v1, gate: G1, doc: "a CONFLICTED material input is non-known in a gate -> EXCLUDED", features: {adv_20d_cr: {state: conflicted, value: 80}}, expect: EXCLUDED}
+  - {id: C09, card: ltqv_v1, gate: G9, doc: "earnings yield out of domain (drop, in blackout) -> UNKNOWN, and G9 blocks", features: {earnings_yield_ttm: {state: out_of_domain, outcome: drop}, ey_median_5y: 0.05, ey_vs_own_5y_median: 1.2}, expect: UNKNOWN}
+  - {id: C10, card: ltqv_v1, gate: G3, doc: "C2: 0.6999999999999998 and 0.7000000000000001 are the same decision after 9-dp quantisation", features: {cfo_pat_3y: 0.6999999999999998}, expect: PASS}
+  - {id: C10b, card: ltqv_v1, gate: G3, features: {cfo_pat_3y: 0.7000000000000001}, expect: PASS}
+  - {id: C10c, card: ltqv_v1, gate: G3, doc: "a real difference (0.699999998) still fails", features: {cfo_pat_3y: 0.699999998}, expect: FAIL}
+  - {id: C11, card: mom_v1, gate: G6, doc: "F&O name, delivery 30% vs calibrated band 25% -> PASS", params: {band_fno: 0.25, band_cash: 0.40}, features: {delivery_pct_20d_avg: 0.30, is_fno_eligible: true}, expect: PASS}
+  - {id: C11b, card: mom_v1, gate: G6, doc: "cash-only name, same 30% vs 40% band -> FAIL", params: {band_fno: 0.25, band_cash: 0.40}, features: {delivery_pct_20d_avg: 0.30, is_fno_eligible: false}, expect: FAIL}
+
+exits:
+  - {id: C12, card: ltqv_v1, exit: X4, doc: "Kleene OR: pledge 30% TRUE OR auditor unknown -> TRUE -> FIRE (a strict reading would only review)", features: {promoter_pledge_pct: 0.30, auditor_resignation_5y: {state: missing}}, expect: FIRE}
+  - {id: C12b, card: ltqv_v1, exit: X4, doc: "pledge 20% FALSE OR auditor unknown -> UNKNOWN -> REVIEW", features: {promoter_pledge_pct: 0.20, auditor_resignation_5y: {state: missing}}, expect: REVIEW}
+  - {id: C12c, card: ltqv_v1, exit: X4, features: {promoter_pledge_pct: 0.20, auditor_resignation_5y: false}, expect: "NO"}
+  - {id: C13, card: ltqv_v1, exit: X3, doc: "Kleene AND: valuation unknown AND trend 0.05 <= 0 FALSE -> FALSE -> NO (not a review)", features: {ey_vs_own_5y_median: {state: missing}, roce_5y_trend: 0.05}, expect: "NO"}
+  - {id: C14, card: ltqv_v1, exit: X1, doc: "the catastrophe case: equity turns negative, roce_hy_ttm out of domain (fail) on the latest half-year -> FIRE. In r5.4 persist was UNKNOWN and the model portfolio held",
+     features: {roce_hy_ttm: {state: out_of_domain, outcome: fail}}, units: {half_year: [{roce_hy_ttm: 0.20}, {roce_hy_ttm: {state: out_of_domain, outcome: fail}}]}, expect: FIRE}
+  - {id: C14b, card: ltqv_v1, exit: X1, doc: "same, but the exit declares on_out_of_domain: review", override: {on_out_of_domain: review},
+     features: {roce_hy_ttm: {state: out_of_domain, outcome: fail}}, units: {half_year: [{roce_hy_ttm: 0.20}, {roce_hy_ttm: {state: out_of_domain, outcome: fail}}]}, expect: REVIEW}
+  - {id: C15, card: ltqv_v1, exit: X1, doc: "two half-years below 12% -> FIRE", features: {roce_hy_ttm: 0.11}, units: {half_year: [{roce_hy_ttm: 0.10}, {roce_hy_ttm: 0.11}]}, expect: FIRE}
+  - {id: C15b, card: ltqv_v1, exit: X1, doc: "only the latest below -> NO", features: {roce_hy_ttm: 0.10}, units: {half_year: [{roce_hy_ttm: 0.13}, {roce_hy_ttm: 0.10}]}, expect: "NO"}
+  - {id: C15c, card: ltqv_v1, exit: X1, doc: "an earlier unit unknown -> REVIEW", features: {roce_hy_ttm: 0.10}, units: {half_year: [{roce_hy_ttm: {state: missing}}, {roce_hy_ttm: 0.10}]}, expect: REVIEW}
+  - {id: C16, card: ltqv_v1, exit: X2, doc: "three-year profit <= 0: cash conversion out of domain (fail) -> FIRE", features: {cfo_pat_3y: {state: out_of_domain, outcome: fail}}, expect: FIRE}
+  - {id: C17, card: mom_v1, exit: X2, doc: "three sessions below the 50-day average -> FIRE", features: {price_vs_dma50: 0.97}, units: {session: [{price_vs_dma50: 0.99}, {price_vs_dma50: 0.98}, {price_vs_dma50: 0.97}]}, expect: FIRE}
+  - {id: C17b, card: mom_v1, exit: X2, doc: "only the last two below -> NO (a card edited to persist 2 sessions would FIRE)", features: {price_vs_dma50: 0.97}, units: {session: [{price_vs_dma50: 1.01}, {price_vs_dma50: 0.98}, {price_vs_dma50: 0.97}]}, expect: "NO"}
+  - {id: C18, card: mom_v1, exit: X5, features: {surveillance_stage: gsm_any}, expect: FIRE}
+
+filters:
+  - {id: C19, card: mom_v1, doc: "circuit days unknown (no band file): not a candidate, still in the scoring population", features: {circuit_days_60d: {state: missing}}, expect: [false, true]}
+  - {id: C19b, card: mom_v1, doc: "6 circuit days: out of both", features: {circuit_days_60d: 6}, expect: [false, false]}
+  - {id: C19c, card: mom_v1, features: {circuit_days_60d: 5}, expect: [true, true]}
+
+confidence:
+  - {id: C20, card: ltqv_v1, doc: "one penalised secondary input missing: high -> medium, still publishable", missing: [roce_stability], expect: [medium, true]}
+  - {id: C20b, card: ltqv_v1, doc: "two missing: low, recorded but never shown", missing: [roce_stability, ev_ebitda_vs_sector], expect: [low, false]}
+
+stops:
+  - {id: C21, card: mom_v1, doc: "G10's path through the CARD's own stop expressions (2.5 x ATR): same stops, exit on session 6",
+     entry_fill: 100, atr_at_signal: 0.04,
+     sessions: [{close: 100, atr_pct: 0.04}, {close: 105, atr_pct: 0.04}, {close: 110, atr_pct: 0.03}, {close: 110, atr_pct: 0.02},
+                {close: 106, atr_pct: 0.015}, {close: 105, atr_pct: 0.015}, {close: 101, atr_pct: 0.015}],
+     expect: {stops_tested: [90.0, 90.0, 94.5, 101.75, 101.75, 101.75, 101.75], exit_session: 6}}
+  - {id: C21b, card: mom_v1, doc: "close exactly at the stop does not exit", entry_fill: 100, atr_at_signal: 0.04, sessions: [{close: 90, atr_pct: 0.04}], expect: {stops_tested: [90.0], exit_session: null}}
+
+quantities:
+  - {id: C22, card: mom_v1, doc: "N = 1 crore, risk 0.5%, max 5%, ATR at signal 2%, close 100: target = min(1e7 x .005 / .05, 5 lakh) = 5 lakh; qty = min(5000, min(floor(500000/103) = 4854, floor(50000 / (103 x 2.5 x .02)) = 9708)) = 4854; risk at the stop 4854 x 103 x 0.05 = 24,998 <= 50,000",
+     params: {notional_capital: 10000000, risk_to_stop_pct: 0.005, max_position_pct: 0.05},
+     runtime: {atr_pct_at_signal: 0.02, hard_cap_value: 500000}, prices: {close_signal: 100},
+     expect: {target_qty: 4854, cap_enforced: false}}
+  - {id: C23, card: ltqv_v1, doc: "G14a through the card's tranche expressions: 100, 97, 103", target_value: 300000, entry_close: 1000, hard_cap_value: 1000000000,
+     t2: {revised_target_value: 300000, prior_close: 1020, attempts: [false, true]}, t3: {revised_target_value: 300000, prior_close: 1000, attempts: [true]},
+     expect: {quantities: [100, 97, 103], earmark: 300, cancelled_after: null}}
+  - {id: C23b, card: ltqv_v1, doc: "G14d through the card: the tranche-2 clamp (revised_target_qty - current_earmark_qty) binds: 100, 20, 0", target_value: 300000, entry_close: 1000, hard_cap_value: 1000000000,
+     t2: {revised_target_value: 120000, prior_close: 1000, attempts: [true]}, t3: {revised_target_value: 120000, prior_close: 1000, attempts: [true]},
+     expect: {quantities: [100, 20, 0], earmark: 120, cancelled_after: null}}
+  - {id: C23c, card: ltqv_v1, doc: "the hard cap binds through the card: cap 100,000 at entry_high 1050 -> floor(95.24) = 95, one third = 31", target_value: 300000, entry_close: 1000, hard_cap_value: 100000,
+     t2: null, t3: null, expect: {quantities: [31, 0, 0], earmark: 31, cancelled_after: 2}}
+
+size_checks:
+  - {id: C24, card: mom_v1, doc: "S1 at notional size 0.05 cr into 25 cr ADV: 0.0010 + 0.02 sqrt(0.002) = 0.001894 -> PASS", features: {adv_20d_cr: 25}, provisional_value_cr: 0.05, expect: {S1: PASS, S2: PASS}}
+  - {id: C24b, card: mom_v1, doc: "S1 re-checked at the ACTUAL size 1.0 cr: 0.0010 + 0.02 x 0.2 = 0.005 > 0.0035 -> FAIL (valid but not currently actionable)", features: {adv_20d_cr: 25}, provisional_value_cr: 1.0, expect: {S1: FAIL, S2: PASS}}
+
+construction:
+  - {id: C25, doc: "max 3 positions, one already held; 4 new claims ranked 0.9, 0.5, 0.7, missing -> the two best ranks take the two free slots",
+     held: [INE0H], max_positions: 3, cash: 1000000,
+     candidates: [{isin: INE0A, rank: 0.9, market_cap: 100, target_value: 200000}, {isin: INE0B, rank: 0.5, market_cap: 900, target_value: 200000},
+                  {isin: INE0C, rank: 0.7, market_cap: 50, target_value: 200000}, {isin: INE0D, rank: null, market_cap: 9999, target_value: 200000}],
+     expect: {taken: [[INE0A, 200000], [INE0C, 200000]], not_taken: [INE0B, INE0D]}}
+  - {id: C25b, doc: "cash runs out: the second claim is sized to the remaining 50,000", held: [], max_positions: 5, cash: 250000,
+     candidates: [{isin: INE0A, rank: 0.9, market_cap: 100, target_value: 200000}, {isin: INE0B, rank: 0.8, market_cap: 100, target_value: 200000},
+                  {isin: INE0C, rank: 0.7, market_cap: 100, target_value: 200000}],
+     expect: {taken: [[INE0A, 200000], [INE0B, 50000]], not_taken: [INE0C]}}
+
+scale:
+  - {id: C26, doc: "a 5-lakh claim on 1-crore measurement capital is a 5% weight; on 20 lakh of your capital that is 1 lakh, capped by 80,000 headroom", target_value: 500000, notional: 10000000, total: 2000000, headroom: 80000, expect: 80000}
+  - {id: C26b, target_value: 500000, notional: 10000000, total: 2000000, headroom: 500000, expect: 100000}
+
+weekly:
+  - {id: C27, doc: "Friday 2 Oct 2026 is a holiday: that week's weekly session is Thursday 1 Oct",
+     calendar: [[2026-09-28, true], [2026-09-29, true], [2026-09-30, true], [2026-10-01, true], [2026-10-02, false],
+                [2026-10-05, true], [2026-10-06, true], [2026-10-07, true], [2026-10-08, true], [2026-10-09, true]],
+     weekday: fri, expect: [2026-10-01, 2026-10-09]}
+  - {id: C27b, doc: "a muhurat Friday is not executable: Thursday is used", calendar: [[2026-11-05, true], [2026-11-06, false]], weekday: fri, expect: [2026-11-05]}
+
+ranking:
+  - {id: C28, card: mom_v1, doc: "30 names: 12-month vol-adjusted momentum 1..30, 6-month 30..1, so z(6m) = -z(12m) and rank = 0.60 z - 0.40 z = 0.20 z(12m): S30, S29, S28 first. The weights matter (reversed weights reverse the order); a name with no inputs ranks missing",
+     population: {n: 30}, expect_top3: [S30, S29, S28]}
