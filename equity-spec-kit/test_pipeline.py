@@ -6,6 +6,8 @@ defects - each a behaviour r5.5 had, or a plausible slip - must each break at le
     python3 test_pipeline.py      (exit 0 = all pass)
     python3 -m pytest -q
 """
+import copy
+import json
 import math
 import os
 import sys
@@ -16,11 +18,29 @@ import yaml
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import reference_engine as E  # noqa: E402
-from speclint import load_yaml  # noqa: E402
+from speclint import closure_sha256, lint, load_yaml  # noqa: E402
 
 G = yaml.safe_load(open(os.path.join(HERE, "golden", "pipeline_cases.yaml"), encoding="utf-8"))["cases"]
 REG = load_yaml(os.path.join(HERE, "registry.yaml"))
+SCHEMA = json.load(open(os.path.join(HERE, "schemas", "card.schema.json"), encoding="utf-8"))
 CARDS = {c: load_yaml(os.path.join(HERE, "strategies", f"{c}.yaml")) for c in ("ltqv_v1", "mom_v1")}
+
+# Real, linter-valid card variants used only as regression fixtures. They exercise semantics the shipped reference
+# cards do not currently use, without changing either strategy's hypothesis.
+_gate = copy.deepcopy(CARDS["mom_v1"])
+_gate["selection_method"] = "gate_only"
+_gate.pop("ranking")
+_gate["construction"].update(max_positions=2, capacity_order="earliest_signal")
+_gate["registry"]["closure_sha256"] = closure_sha256(_gate, REG)
+assert lint(_gate, REG, SCHEMA, "experimental") == []
+assert "ranking" not in _gate
+CARDS["mom_gate_only"] = _gate
+
+_max1 = copy.deepcopy(CARDS["mom_v1"])
+_max1["construction"]["max_positions"] = 1
+_max1["registry"]["closure_sha256"] = closure_sha256(_max1, REG)
+assert lint(_max1, REG, SCHEMA, "experimental") == []
+CARDS["mom_max1"] = _max1
 
 
 def _value(spec, i):
@@ -44,13 +64,20 @@ def population(case):
         sector, eligible = o.pop("_sector", "it_services"), o.pop("_eligible", True)
         fs.update({f: (dict(v) if isinstance(v, dict) else {"state": "known", "value": v}) for f, v in o.items()})
         pop[name] = {"features": fs, "sector": sector, "market_eligible": eligible, "market_cap": 1000 + i,
-                     "close": case["close"]}
+                     "close": case["close"], "signal_at": case.get("signal_at", {}).get(name)}
     return pop
 
 
 def run_case(case):
+    if "expect_error" in case:
+        try:
+            E.run_pipeline(CARDS[case["card"]], REG, case["params"], population(case), case["held"],
+                           case["cash"], case["max_positions"] if "max_positions" in case else None)
+        except ValueError as exc:
+            return {"error": str(exc)}, {"error": case["expect_error"]}
+        return {"error": None}, {"error": case["expect_error"]}
     out, entries = E.run_pipeline(CARDS[case["card"]], REG, case["params"], population(case), case["held"],
-                                  case["cash"], case["max_positions"])
+                                  case["cash"], case.get("max_positions"))
     want, got = case["expect"], {}
     if "entries" in want:
         got["entries"] = entries
@@ -93,9 +120,10 @@ def _patch(obj, name, make):
 
 
 def _r55_construct(orig):
-    def construct(candidates, held, max_positions, cash, tol=1e-9):      # missing ranks admitted last (r5.5)
+    def construct(candidates, held, max_positions, cash, tol=1e-9, capacity_order="rank"):
+        # Semantic reintroduction of the r5.5 defect, not a signature mismatch: unranked names are admitted last.
         ranked = [c for c in candidates if c["rank"] is not None]
-        taken, rest = orig(ranked, held, max_positions, cash, tol)
+        taken, rest = orig(ranked, held, max_positions, cash, tol, capacity_order=capacity_order)
         spare = max_positions - len(held) - len(taken)
         cash_left = cash - sum(v for _, v in taken)
         for c in sorted((c for c in candidates if c["rank"] is None), key=lambda c: (-c["market_cap"], c["isin"])):
@@ -163,6 +191,18 @@ def _unknown_filter_scored_out(orig):
     return filter_membership
 
 
+def _construct_forces_rank(orig):
+    def construct(candidates, held, max_positions, cash, tol=1e-9, capacity_order="rank"):
+        return orig(candidates, held, max_positions, cash, tol, capacity_order="rank")
+    return construct
+
+
+def _runtime_overrides_card(orig):
+    def resolve(card, supplied):
+        return supplied if supplied is not None else orig(card, supplied)
+    return resolve
+
+
 DEFECTS = [
     ("r5.5: unrankable is a candidate and construct admits it after the ranked names", lambda: _both(
         _patch(E.Engine, "evaluate", _unrankable_as_rank_none), _patch(E, "construct", _r55_construct))),
@@ -173,6 +213,8 @@ DEFECTS = [
     ("model hard cap ignores the cash allotted", lambda: _patch(E.Engine, "quantities", _cap_ignores_allotment)),
     ("an UNKNOWN filter also removes the security from the scoring population",
      lambda: _patch(E.Engine, "filter_membership", _unknown_filter_scored_out)),
+    ("gate-only construction is forced back through rank ordering", lambda: _patch(E, "construct", _construct_forces_rank)),
+    ("runtime max_positions silently overrides the card", lambda: _patch(E, "_resolve_max_positions", _runtime_overrides_card)),
 ]
 
 

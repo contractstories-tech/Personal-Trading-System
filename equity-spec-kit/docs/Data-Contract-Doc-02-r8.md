@@ -1,8 +1,8 @@
-# Data Contract & Canonical Schema — Document 02 r6
+# Data Contract & Canonical Schema — Document 02 r8
 
-*Release r5.6 · 24 September 2026 · current state only; revision history is in the Issue Log*
+*Release r5.9 · 25 September 2026 · current state only; revision history is in the Issue Log*
 
-Governs every table, field, source, timing rule and feature definition referenced by Document 01 r9 and the strategy cards. The corrections the real Stage 0 files teach go into the next revision, r6, at Stage 0 close. A card owns its thresholds; how the compared value is computed is defined here and in `registry.yaml`. An identifier a card uses that is not in the registry fails the build.
+Governs every table, field, source, timing rule and feature definition referenced by Document 01 r11 and the strategy cards. r5.8 incorporated the first real NSE UDiFF/MII findings; r5.9 extends that contract to delivery-source validation, source acquisition/coverage evidence and non-semantic price-band capture. A card owns its thresholds; how the compared value is computed is defined here and in `registry.yaml`. An identifier a card uses that is not in the registry fails the build.
 
 ## 1. Conventions
 
@@ -23,9 +23,10 @@ Each source has a `source_id` and a role per domain. **Primary** populates; **va
 
 | Domain | Primary | Validation |
 | --- | --- | --- |
-| Daily OHLCV, traded value | NSE bhavcopy | Broker end-of-day candles |
-| Delivery | NSE security-wise delivery file | — |
-| Price bands | NSE daily price-band file | Derived from OHLC vs prior close |
+| Daily OHLCV, traded value | NSE final CM bhavcopy (UDiFF for the current format) | Broker end-of-day candles |
+| Daily exchange security reference | NSE MII Security File (NSE-listed securities) | — |
+| Delivery | NSE security-wise delivery (MTO) | Full bhavcopy with deliverable data (`sec_bhavdata_full`) as validation only |
+| Price bands | NSE daily price-band/security-list evidence | Derived from OHLC vs prior close only after source semantics are validated |
 | Corporate actions | NSE/BSE announcements | Licensed vendor |
 | Financial statements | Licensed vendor after the Stage 0 bake-off; exchange XBRL until then | Original filing |
 | Filing timestamps | Exchange announcement timestamp | Vendor |
@@ -41,6 +42,12 @@ Each source has a `source_id` and a role per domain. **Primary** populates; **va
 **A vendor's timestamp never beats the exchange's.** A vendor that cannot supply exchange-traceable filing timestamps and restatement history fails the bake-off.
 
 **Source coverage is recorded, not assumed.** `source_coverage(source_id, date, complete)` states whether a complete snapshot exists. Absence from a complete snapshot is a known negative; absence where no snapshot exists is `missing`, reason `no_source_coverage`.
+
+**r5.9 acquisition and coverage.** `eos.m2.catalog` is the explicit allowlist of NSE sources and archive URL/filename conventions; `eos.m2.acquire` downloads bytes only and never mutates the warehouse. The bytes still enter research state only through the normal landing/receipt/parser path. `coverage_report.py` reports, for each requested date/source, `parsed_complete`, `parsed_incomplete`, `captured_unparsed`, `parse_rejected`, `parsed_without_coverage`, `receipt_only` or `missing`. A capture-only source can never become parsed coverage by receipt alone.
+
+**Delivery evidence.** `nse_cm_delivery` (MTO) remains the primary delivery source. Its type-10 trade date and declared detail count are structural checks; type-20 reported deliverable percentage is retained and arithmetically compared with quantity/traded quantity. The full bhavcopy deliverable file is stored separately as `delivery_crosscheck_observation`: it may raise conflicts but cannot overwrite or populate the primary MTO table. A `-` delivery quantity/percentage is `delivery_available=false`, never zero.
+
+**Price-band evidence in r5.9.** The MII master retains raw `PricRg`, `PricRgTp`, `MaxPric`, `MinPric` and `TickSz` fields. The official complete price-band list can also be captured byte-exact as `nse_cm_price_band`; until its historical date/effective-session and tick-rounding semantics are validated, it produces a `captured_unparsed` parse event only, no `source_coverage`, no price-band observation and no executable `band_close_state`. This is deliberate fail-closed behaviour, not silent fallback.
 
 ## 3. Time
 
@@ -91,11 +98,19 @@ Exchange files describe trading that already happened, and the proposed order ex
 
 ## 4. Security master and historical state
 
-- **Identity is the `security_id`; the ISIN is its current identifier.** A face-value change normally allots a new ISIN in India, as do some capital reductions and schemes. `security_lineage(security_id, isin, valid_from, valid_to, reason, ca_event_id)` keeps half-open, non-overlapping ISIN windows per security. Features, universe membership and its hysteresis, claims, cooldowns, `holding_days`, model positions, the ledger holding, tax lots and stop and price state are keyed by `security_id`; raw observations and broker trades keep the reported ISIN. Across an ISIN change the price series joins with the action's `f` applied, held quantity is divided by `f`, price state is multiplied by `f`, and holding periods, cooldowns and tax-lot dates carry unchanged (registry `security_identity`; golden cases G33a–b). A merger target converts into the successor's `security_id` at the scheme ratio on the record date. Symbols, BSE codes, broker tokens and former names are aliases with half-open validity windows; overlapping windows are errors.
-- **Scope.** NSE main-board equity. Excluded entirely: SME listings, ETFs, REITs, InvITs, preference shares, debt. **Trade-for-trade series stay in the research universe but are excluded from the market-eligible universe.** The reason is platform-level, not strategy-specific: the exchange places securities there under surveillance, every trade settles compulsorily by delivery, and there is no intraday netting, so their trading conditions differ from the rest of the universe for every strategy — not only for those reading delivery data.
-- **State tables**, all queried as-of, all with source coverage: `security_classification`, `index_membership` (benchmarks only), `derivatives_eligibility`, `surveillance_status`, `restriction_state` (manual, with author and timestamp).
-- **Surveillance before the frameworks existed.** `surveillance_framework(framework, start_date)` records when each framework (ASM long-term, ASM short-term, GSM) began; exact dates are verified at Stage 0. For dates before a framework's start, `surveillance_stage` is **known `none`** — nothing existed to be under. After the start, a date without list coverage is `missing`. Treating the pre-framework years as missing would fail every security for half the history.
-- **`sector_map`** is versioned and maps vendor classifications to registry `sector_codes`; an unmapped classification is an error.
+**Economic identity remains `security_id`; NSE source identity is separate.** `security_lineage(security_id, isin, valid_from, valid_to, reason, ca_event_id)` remains the permanent identity bridge across ISIN changes and corporate actions. Raw exchange observations keep the identifiers NSE actually reported. For current UDiFF/MII files, `source_instrument_id` is NSE's `FinInstrmId`: it is the preferred **contemporaneous source join key**, not the permanent economic-security key. Symbols, names, series and ISINs are retained as historical attributes and cross-checks; a symbol change never rewrites an earlier bhavcopy row.
+
+**NSE MII security-master snapshot.** `security_master_observation` stores each parsed daily MII row with `source_instrument_id`, `master_file_date`, `version_no`, `symbol`, `series`, `name`, `isin`, `instrument_type`, normal-market status/eligibility, delete flag, dummy/test flag, derived `security_class`, `market_eligible`, source hash/availability and supersession metadata. The current gzip CSV header is fingerprinted exactly; structural drift fails loudly. `FinInstrmId` must be unique within one master snapshot. Symbols ending `NSETEST` and dummy ISIN rows are recorded as source evidence but are never investable.
+
+**File date is not an effective date.** The MII file/report date, when the system received/could use the file, and the trading session for which a row is effective are three different facts. The master therefore carries nullable `effective_session` and `effective_session_basis` (`measured`, `exchange_notice`, `validated_convention`, or `unresolved`). r5.8 deliberately does **not** infer `effective_session` from the filename. A newer available master row whose effective session is unresolved blocks historical eligibility/classification rather than allowing the system to select an older convenient state. A row known to be future-effective becomes usable for eligibility only from that effective session.
+
+**Bhavcopy/master reconciliation.** Contemporary exchange records reconcile first by `source_instrument_id`; ISIN, symbol and series are validation/history fields. A same-ID/same-ISIN metadata transition (for example a later symbol) is retained as a transition and never overwrites the historical bhavcopy. An unexplained source-ID/ISIN conflict fails closed and is logged for review.
+
+**Initial source classification.** Continuous NSE main-board company equity is identified from authoritative exchange fields, initially `series = EQ` and `instrument_type = 0`, with dummy/test rows and deleted/non-eligible state excluded where the effective master state is known. Name/ticker searches and ISIN-prefix shortcuts are forbidden classification rules. ETFs/funds that share `EQ` but carry a non-equity instrument type are not company equity. SME (`SM/ST/SZ`), REIT/InvIT, preference/debt and other non-company classes remain outside the main-board universe. Trade-for-trade (`BE/BZ`) remains a Stage 0 research-universe policy item because the series can carry more than one economic case; r5.8 does not admit it to the continuous main-board classifier by guesswork.
+
+**Resolved state.** For a target session the data layer returns one of `traded`, `no_trade`, `quarantined`, `source_not_available`, or `master_state_unresolved`. `no_trade` is permitted only when (a) the relevant final bhavcopy has complete source coverage, (b) the instrument is absent rather than quarantined, and (c) an effective master state positively establishes the in-scope security as market-eligible. No-trade never creates OHLC zeroes and never fabricates a carried-forward trade.
+
+**Long-run security state.** Features, universe membership and hysteresis, claims, cooldowns, holdings, tax lots and adjusted price state remain keyed by `security_id`. Across an ISIN change the corporate-action policy joins the lineage and transforms quantity/price state as specified in §5. Other as-of state tables remain `security_classification`, `index_membership`, `derivatives_eligibility`, `surveillance_status` and manual `restriction_state`. `surveillance_framework` records framework start dates; before a framework exists its status is known `none`, while missing list coverage after inception is `missing`. `sector_map` remains versioned and unmapped classifications fail.
 
 ## 5. Corporate actions
 
@@ -136,30 +151,21 @@ Exchange files describe trading that already happened, and the proposed order ex
 
 ## 6. Prices
 
-**Versioned observations.** `price_observation`: `isin` · `trade_date` · `version_no` · `series` · `open` · `high` · `low` · `close` · `prev_close` · `volume` · `traded_value` · `num_trades` · `source_id` · `source_published_at` · `received_at` · `effective_from` · `system_available_at` · `usable_from` · `availability_inferred` · `supersedes_version`. The key is `(isin, trade_date, version_no)`, and a duplicate key is an integrity failure that stops the read. A correction is a new version and never overwrites an old one.
+**Source observations.** `price_observation` keeps the exchange observation, not a prematurely collapsed security/day value: `source_instrument_id` (nullable for legacy files) · `isin` · `symbol` · `series` · `trade_date` · `version_no` · OHLC · `prev_close` · volume · traded value · trades · source/provenance/availability fields · `supersedes_version`. For UDiFF, source identity is `(source_instrument_id, trade_date)`; a true duplicate of that source observation is invalid. Legacy files without a source token fall back to `(isin, series, trade_date)`. **The same ISIN may legitimately have several observations on one date when NSE reports different source instruments/series.** Those rows are retained rather than quarantined.
 
-**Delivery is its own table.** `delivery_observation` (`isin` · `trade_date` · `version_no` · `delivery_qty` · `traded_qty_reported` · the same availability fields) is versioned independently. The delivery file is a separate source with its own arrival time, corrections and coverage. Were it a column on the price row, a late delivery file would look like a price correction. Its rows are mapped to ISINs through the same trading date's bhavcopy.
+**Canonical strategy price is a derived view, not the raw table.** All valid source observations remain evidence. The strategy-facing regular-market view chooses at most one observation by an explicit series policy. In r5.8 `EQ`, then `BE/BZ`, then SME series have declared precedence for the resolver; `BL`, `IQ` and `RL` are retained as source evidence but are non-canonical. An equal-priority ambiguity is an integrity error rather than a silent pick. This prevents a block-deal observation from replacing the ordinary market bar while preserving the block deal for audit/research.
 
-**Row quarantine.** A row failing a row-level check is written to `row_quarantine` with its reason, instead of rejecting the day's file. Row-level checks are a malformed or duplicate ISIN, an impossible OHLC (including zero prices), a negative quantity, or an unmapped or invalid delivery row. The file is rejected — nothing written — only on a structural fault (header, mixed dates, the canary prefix), or when the quarantined share exceeds `quality.max_quarantine_share`. How a genuine no-trade row is stored is settled on the real files (S1b).
+**Corrections and withdrawals.** A changed source observation is a new immutable version. If a later authoritative **complete** reissue for the same source/date removes an observation that an earlier complete file contained, the system writes `observation_tombstone` with the source identity, withdrawal version, hash and `usable_from`; it never deletes history. Reads before the correction see the old row; reads after it do not. A quarantined row is not treated as an omission and therefore cannot accidentally tombstone a prior valid observation.
 
-**Resolution.** Per `(isin, trade_date)`, the resolved view takes the highest version whose `usable_from` is at or before the cutoff. It joins delivery with `delivery_state` (`known`, or `missing` with reason `no_source_coverage`, `absent_in_covered_file`, `quarantined` or — in a panel read — `not_yet_available`). There are two read contracts, because they answer different questions:
+**Delivery is independent.** `delivery_observation` is versioned separately and may carry the mapped `source_instrument_id`; delivery arrival/corrections never rewrite the price row. Its rows map through the date's source price population.
 
-| Contract | Cutoff | Use |
-| --- | --- | --- |
-| `history_known_as_of(E)` (Document 02 name `price_raw_resolved`) | E's cutoff, for every trade date up to E | The exact input of **one** decision at E. A correction received by E replaces the original print, even for earlier bars |
-| `point_in_time_panel(start, end)` with `panel_as_of(panel, E)` | Each trade date's **own** cutoff; a bar first published after it keeps its first version and real `usable_from` | A look-ahead-free panel for a **sequence** of decisions. Each bar is taken as first known, so a correction a later decision could have seen is ignored. That makes the panel **information-poorer** than the decision was, not "conservative": a stale, wrong print can flatter a strategy as easily as penalise it. `panel_as_of` masks what decision E could not yet use; no bar a later decision had is ever dropped |
+**Quarantine.** Row-level faults (invalid identifier/source identity, impossible OHLC including zero prices, negative quantity, unmapped/invalid delivery) are recorded in `row_quarantine`. A repeated ISIN alone is **not** a fault. A structural fault (unknown header/schema, mixed dates, canary collision) rejects the parse, and the source's quarantine threshold remains a file-level kill switch.
 
-A sequence of historical decisions uses either the exact per-date view or the masked panel, and its run manifest records which (`price_read_contract`: `exact_per_decision` or `first_known_panel`). **Exact per-decision reads are the evidential standard.** A sealed holdout evaluation must use them, and panel results are labelled and never promotion evidence (Document 04 §7). A sequence must never use `history_known_as_of(end)` over the whole range, because every earlier decision would then see corrections that arrived after it. Everything downstream reads a resolved view.
+**Point-in-time resolution.** Source observations and tombstones are resolved by source identity at the requested cutoff. `source_prices_known_as_of(E)` exposes the complete source evidence. `history_known_as_of(E)` and the point-in-time panel expose the canonical strategy-facing price plus delivery state. `exact_per_decision` remains the evidential standard for backtests/holdout; `first_known_panel` remains look-ahead-free but information-poorer. A tombstoned source observation is absent only after its withdrawal became usable.
 
-**Series.**
+**Trade/no-trade semantics.** A source row with positive/valid prices is `traded`. An in-scope instrument absent from a complete final bhavcopy becomes `no_trade` only under §4's resolved effective master state. `quarantined`, `source_not_available` and `master_state_unresolved` are distinct and cannot be silently converted to no-trade. No state creates synthetic zero OHLC or a fake traded row.
 
-- `price_raw` (resolved): as printed; the only series for execution simulation and band detection.
-- `price_adjusted`: `raw × F_cum(t)`, where `F_cum` multiplies every `f` with `ex_date > t` recorded in the adjustment version in use; volume is divided by `F_cum`. Each new action creates a new `adjustment_version`.
-- `price_total_return`: `TR(t) = TR(t−1) × (adj_close(t) + adj_div(t)) ÷ adj_close(t−1)`, bound to the **same** `adjustment_version`. Pre-ex-date ratios are invariant to a common rescaling; only the ex-date step needs the matching version. Special dividends already removed in `price_adjusted` are not added again.
-
-**Band state** `band_close_state`: `closed_at_lower_band`, `closed_at_upper_band`, `within_band`, or `missing` when no band file exists. This is a closing fact; it says nothing about whether a trade was possible at the open. Fill feasibility is Document 04's decision.
-
-**Delivery.** `delivery_pct = delivery_qty ÷ volume`. **Traded value** comes from the bhavcopy, never close × volume.
+**Derived price series.** `price_raw` is the resolved canonical exchange bar used for execution simulation and band detection. `price_adjusted` and `price_total_return` apply the corporate-action adjustment version exactly as before (§5). `band_close_state` remains `closed_at_lower_band`, `closed_at_upper_band`, `within_band`, or `missing`. `delivery_pct = delivery_qty ÷ volume`; traded value always comes from the bhavcopy rather than close × volume.
 
 ## 7. Financial facts
 
@@ -258,13 +264,20 @@ Total shares are used, not free float, so this is the *point-in-time top-N marke
 
 **Tolerances** (validation vs primary; beyond → `conflicted`): close price, exact to the paisa; volume and traded value, 0.1%; statement lines, 0.5% or ₹1 crore, whichever is larger; share counts, 1%; promoter holding and pledge, 0.5 pp; corporate-action ratios, exact.
 
-**Conflicts** are logged to `data_conflict` with both values, both sources, the tolerance breached and the first date affected. Resolution is manual, recorded with a reason, and creates a new version. For ranking only, a conflicted share count keeps its primary value.
+**Conflicts** are logged to `data_conflict` with both values, both sources, the tolerance breached and the first date affected. Source-identity and master/bhavcopy metadata disagreements carry `source_instrument_id` and series where available. A legitimate dated metadata transition is preserved as history; an unexplained identity conflict fails closed. Resolution is manual, recorded with a reason, and creates a new version. For ranking only, a conflicted share count keeps its primary value.
 
 ## 12. Storage, snapshots and bootstrap
 
 Partitioned Parquet with a `_manifest.json` per partition. There is no persistent database file.
 
-**Raw landing.** Before a source file is parsed, its exact bytes are landed at `_raw/<source_id>/<sha256><ext>`. The landed copy is content-addressed and write-once: landing the same bytes again is a no-op, and a landed file whose bytes no longer match its name is an integrity failure. The file is marked read-only. Parsing reads the landed copy, never the download folder, so nothing that happens to the original later can change what was ingested. `raw_file` (`source_id` · `file_sha256` · `original_name` · `source_url` · `retrieved_at` · `received_at` · `size_bytes` · `landed_path`) is committed in the same batch as the file's observations. A rejected file's bytes stay landed, as evidence of what was received, but get no `raw_file` row.
+**Raw landing and provenance.** Before a source file is parsed, its exact bytes are landed at `_raw/<source_id>/<sha256><ext>`. The landed copy is content-addressed and write-once and marked read-only. Parsing reads the landed copy, never the download folder. Landing and parsing are deliberately separate transactions:
+
+1. **Receipt transaction.** Once the bytes are durable, `raw_file` is committed immediately: `source_id` · `file_sha256` · `original_name` · `source_url` · `retrieved_at` · `received_at` · `size_bytes` · `landed_path` · `acquisition_method`. The same acquisition event is idempotent on retry. A parser failure cannot erase this receipt.
+2. **Parse/observation transaction.** Parsing then records a `raw_parse_event` (`parsed` or `rejected`, format/date when known, and parser error when rejected) and, on success, observations, conflicts, quarantine, coverage and ingestion log atomically. A structural/parser rejection therefore leaves bytes + receipt + rejected parse evidence, but no observations.
+
+`acquisition_method` is one of `manual_upload`, `scheduled_download`, `api`, `vendor_drop`, `archive_import`. `received_at` means when the warehouse accepted the source and is always required. `retrieved_at` means when the source was obtained. Manual upload may legitimately have null `source_url` and `retrieved_at`; scheduled/API acquisition requires both; vendor/archive acquisition requires `retrieved_at`. Any supplied retrieval time must be timezone-aware and not later than receipt.
+
+Read-only permissions are defence in depth, not the integrity proof. `Warehouse.verify_raw_integrity()` reopens every receipted blob, requires it to remain under `_raw`, recomputes SHA-256 and size, and fails on a missing, moved or changed blob. Warehouse snapshot creation invokes this check, so a snapshot/evidence freeze cannot certify tampered raw evidence.
 
 **One pre-write validator for every codec.** Before any part is written, every row is checked against its table schema. Naive timestamps, unknown columns, floats where the schema says decimal and booleans where it says integer are refused, on Parquet exactly as on the JSONL test codec.
 
@@ -274,7 +287,7 @@ Partitioned Parquet with a `_manifest.json` per partition. There is no persisten
 2. One batch record is written atomically. **This is the commit point.**
 3. The manifests are updated idempotently, and an applied-marker is written.
 
-A reader refuses to read while any committed batch is unapplied, and the next writer rolls such a batch forward. A part listed without a commit record is an integrity failure. All writes run under one warehouse lock, which spans reading the latest version, allocating the next one and committing, so no two writers can allocate the same version. The lock is an operating-system lock on `.writer.lock` (`flock` on POSIX, `msvcrt.locking` on Windows). The OS releases it when the holding process dies, so a crash never leaves a stale lock, and the file itself is never deleted. `.writer.owner` records the holder's pid, host and start time, for diagnosis only. A snapshot lists every manifest hash in use. The bootstrap script is generated from the snapshot and lists files explicitly — never globs — so no query reads a partition written after its snapshot. Old adjustment versions are kept until no snapshot references them.
+A reader refuses to read while any committed parse/observation batch is unapplied, and the next writer rolls such a batch forward. A part listed without a commit record is an integrity failure. All writes run under one warehouse lock, which spans reading the latest version, allocating the next one and committing, so no two writers can allocate the same version. The lock is an operating-system lock on `.writer.lock` (`flock` on POSIX, `msvcrt.locking` on Windows). The OS releases it when the holding process dies, so a crash never leaves a stale lock, and the file itself is never deleted. `.writer.owner` records the holder's pid, host and start time, for diagnosis only. A snapshot lists every manifest hash in use. The bootstrap script is generated from the snapshot and lists files explicitly — never globs — so no query reads a partition written after its snapshot. Old adjustment versions are kept until no snapshot references them.
 
 ## 13. Governance and forensic source contracts
 
@@ -323,10 +336,15 @@ No intraday card can pass `experimental` until these are implemented; the linter
 
 ## 17. Quality checks, Stage 0 acceptance and verification items
 
-**Every ingestion:** OHLC ordering and ISIN validity per row (a failing row is quarantined, §6; the file is rejected above the quarantine limit); uniqueness of `(isin, trade_date, version_no)`; row count within ±5% of the prior day (kill switch below 90%); close-to-close moves beyond 3× the band with no corporate action flagged for review; adjusted-series continuity at ex-dates within ±25%, or 5× the 60-day median absolute return; the balance-sheet identity (assets = liabilities + owners' equity + NCI) within 1%; normalised quarters summing to FY within 0.5%; share-count reconciliation within 1%; allocations summing to fills; alias windows not overlapping; `usable_from ≥ filed_at` everywhere.
+**Every ingestion:** OHLC ordering and identifier validity per row (a failing row is quarantined, §6; the file is rejected above the quarantine limit); uniqueness of the source observation identity (UDiFF `source_instrument_id + trade_date`, legacy `ISIN + series + trade_date`); legitimate same-ISIN multi-series rows preserved; MII source-instrument IDs unique within a snapshot; exact source schema fingerprints; row count within ±5% of the prior day (kill switch below 90%); no unresolved master state used to manufacture eligibility/no-trade; tombstones only from later complete reissues; close-to-close moves beyond 3× the band with no corporate action flagged for review; adjusted-series continuity at ex-dates; the financial/share-count reconciliations; `usable_from ≥ filed_at` everywhere.
 
 **Stage 0 acceptance:**
 
+- A real-derived current UDiFF shape of 3,637 source rows, including two legitimate EQ+BL same-ISIN pairs, is preserved without duplicate-ISIN quarantine; canonical regular-market rows are derived separately.
+- The current MII Security File schema parses gzip input, identifies dummy/test rows, and classifies the company-equity/ETF/DVR examples from exchange fields without name/ISIN-prefix heuristics.
+- A historical metadata transition proves that an MII file date is not treated as its effective session; unresolved effective state fails closed.
+- Explicit no-trade resolution distinguishes complete-source absence from quarantine and source/master uncertainty.
+- Complete-file correction withdrawal is point-in-time through a tombstone.
 - The XBRL parser reproduces the canonical facts for 15–20 difficult securities, including reporting-duration normalisation.
 - **The same three securities parse correctly in 2015, 2019 and 2024 filings.** Exchange XBRL taxonomies changed across releases (`in-gaap`, `ind-as-2016`, `ind-as-2019`) and tags move namespace or nesting between them; testing only current filings would hide that.
 - Price-band file coverage is measured across the full history; uncovered periods are listed, since Document 04 excludes them from evidence rather than assuming they were benign.

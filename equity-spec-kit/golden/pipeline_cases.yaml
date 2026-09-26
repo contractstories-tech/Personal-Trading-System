@@ -168,3 +168,49 @@ cases:
         taken: [S32, S34]
         no_capacity: [S03, S04, S05, S06, S07, S08, S09, S10, S11, S12, S13, S14, S15, S16, S17, S18, S19, S20, S21, S22, S23, S24, S25, S26, S27, S28, S29, S30]
       confidence: {S34: medium, S32: low}
+
+  - id: P5
+    card: mom_gate_only
+    doc: >-
+      A linter-valid gate-only variant has no ranking block and declares construction.capacity_order =
+      earliest_signal with max_positions = 2. All four names pass its filters and gates. Capacity therefore uses
+      the actual signal instant, not rank or population/alphabetical order: S02 (10:01) is first and S03/S04 tie
+      at 10:02, with the deterministic ISIN/name tie-break admitting S03. S01 signalled last at 10:03.
+    params: {notional_capital: 10000000, risk_to_stop_pct: 0.005, max_position_pct: 0.05, band_fno: 0.25, band_cash: 0.45}
+    names: 4
+    close: 100
+    cash: 1000000
+    max_positions: null
+    held: []
+    features: {from: P1}
+    overrides:
+      S01: {vol_adj_mom_12m: 0.80}
+      S02: {vol_adj_mom_12m: 0.80}
+      S03: {vol_adj_mom_12m: 0.80}
+      S04: {vol_adj_mom_12m: 0.80}
+    signal_at:
+      S01: "2026-09-24T10:03:00+05:30"
+      S02: "2026-09-24T10:01:00+05:30"
+      S03: "2026-09-24T10:02:00+05:30"
+      S04: "2026-09-24T04:32:00Z"
+    expect:
+      entries: [[S02, 4854], [S03, 4854]]
+      published: [S02, S03]
+      status:
+        taken: [S02, S03]
+        no_capacity: [S01, S04]
+
+  - id: P6
+    card: mom_max1
+    doc: >-
+      construction.max_positions = 1 is part of the card hypothesis. Supplying max_positions = 3 at runtime is
+      an explicit mismatch error; orchestration must never silently turn a one-slot strategy into a three-slot one.
+    params: {notional_capital: 10000000, risk_to_stop_pct: 0.005, max_position_pct: 0.05, band_fno: 0.25, band_cash: 0.45}
+    names: 1
+    close: 100
+    cash: 1000000
+    max_positions: 3
+    held: []
+    features: {from: P1}
+    overrides: {}
+    expect_error: "max_positions mismatch: card declares 1, runtime supplied 3"

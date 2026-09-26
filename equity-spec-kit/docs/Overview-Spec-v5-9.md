@@ -1,6 +1,6 @@
-# Equity Opportunity System — Specification v5.6
+# Equity Opportunity System — Specification v5.9
 
-*Release r5.6 · 24 September 2026 · Controlling package bound by MANIFEST.json*
+*Release r5.9 · 25 September 2026 · Controlling package bound by MANIFEST.json*
 
 ## 1. What this system is
 
@@ -97,8 +97,8 @@ The two reference strategies prove the framework; they are not the product's bou
 
 | Gate | State |
 | --- | --- |
-| Architecture, data contract, validation protocol | r5.6. Every finding of the independent audit of r5.4 (Issue Log §12) and of the review of r5.5 (§13) is resolved in the package, each with a test that fails on the release it came from. Remaining items are scheduled to the phase where they first matter (Document 01 §17) |
-| Stage 0: sources, parsers, security master, prices | **In progress.** M2 price ingestion is built (r5.3), hardened (r5.4), made codec-independent with row quarantine (r5.5), and given per-platform durability, a crash-safe OS writer lock and write-once raw landing (r5.6). Its full suite passes on Linux on both codecs and on the Windows code paths under emulation. **It has not yet been run on the Windows warehouse machine: that run is the next gate** (README, Certification). Real-file hardening (S1b) waits for the NSE sample files |
+| Architecture, data contract, validation protocol | **r5.9.** r5.8 supplies the real-NSE price/security-reference semantics (§15). r5.9 adds delivery-source hardening and cross-check evidence, an explicit NSE source catalogue/acquisition layer, coverage reporting, and immutable capture of still-unresolved price-band reference files (§16). |
+| Stage 0: sources, parsers, security master, prices/delivery | **In progress, market-data completion.** r5.7 is the last clean native-Windows/Parquet certified baseline. r5.8 corrected the genuine UDiFF/MII source semantics; r5.9 adds hardened primary MTO delivery, independent full-bhav delivery validation, a source catalogue/acquisition layer, date-by-date coverage reporting and immutable capture of unresolved price-band evidence. The build has 66 M2 cases on POSIX/Windows-sim JSONL plus catalogue/acquisition tests; native Windows/Parquet and genuine r5.9 real-file/network acceptance remain external. |
 | Formal backtesting | Protocol, reference engine and golden cases exist. Blocked until the production engine (M5, M6, M7, M14) passes every golden file unmodified; the trial log, holdout enforcement, Brinson–Fachler and the run-manifest validator exist; each card's measurement parameters are pre-registered; and your contract note reconciles with the cost model |
 | Shadow use | Blocked until a strategy passes backtest, holdout and golden cases, and you set its OPEN parameters |
 | Production recommendations | Blocked until shadow evidence supports promotion |
@@ -110,11 +110,11 @@ The controlling set is the file package whose SHA-256 digests are recorded in `M
 
 | Artefact | Role |
 | --- | --- |
-| This overview (v5.6) | Product scope and principles |
-| Document 01 r9 — Core Platform Architecture | Modules, flows, evaluation semantics, state machines, boundaries |
-| Document 02 r6 — Data Contract & Canonical Schema | Every table, field, source, timing rule and feature definition |
+| This overview (v5.8) | Product scope and principles |
+| Document 01 r11 — Core Platform Architecture | Modules, flows, evaluation semantics, state machines, boundaries |
+| Document 02 r8 — Data Contract & Canonical Schema | Every table, field, source, timing rule and feature definition |
 | Document 03 r8 — Strategy Pack | Reference strategies; card sections generated from the YAML |
-| Document 04 r5 — Validation Protocol | Simulation, costs, tax view, holdout lineage, trials, stress, metrics, promotion statistics, acceptance |
+| Document 04 r7 — Validation Protocol | Simulation, costs, tax view, holdout lineage, trials, stress, metrics, promotion statistics, acceptance |
 | `registry.yaml` 3.1.0 | Single owner of feature, vocabulary, evaluation-semantics and session-policy metadata; each entry versioned |
 | `lifecycle/`, `register_card.py` | Each card version's status and the evidence behind it |
 | `policies/market_universe.yaml` | The universe policy: N = 500 and its buffers |
@@ -126,7 +126,7 @@ The controlling set is the file package whose SHA-256 digests are recorded in `M
 | `portfolio_policy.yaml` | Your policy, values OPEN until you set them; the allocator's rules are fixed |
 | Stage 0 Plan | Data-reality sources, order of work, files to download |
 | `eos/`, `tests/`, `policies/source_policy.yaml` | Product code (Stage 0), its tests, and the source and availability policy |
-| Issue Log & Traceability r5.6 | Disposition of every review finding |
+| Issue Log & Traceability r5.9 | Disposition of every review finding, including r5.7 post-audit corrections (§14) and r5.8 real-NSE corrections (§15) and r5.9 market-data completion (§16) |
 
 ## 9. What comes next
 

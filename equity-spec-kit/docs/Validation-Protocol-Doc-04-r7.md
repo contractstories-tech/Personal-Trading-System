@@ -1,6 +1,6 @@
-# Validation Protocol — Document 04 r5
+# Validation Protocol — Document 04 r7
 
-*Release r5.6 · 24 September 2026 · governs how every backtest, shadow run and promotion is conducted*
+*Release r5.9 · 25 September 2026 · governs how every backtest, shadow run and promotion is conducted*
 
 ## 1. Purpose and what counts as evidence
 
@@ -24,7 +24,7 @@ The golden cases are executable and live in the package:
 | `reference_features.py`, `golden/feature_cases.yaml`, `test_features.py` | Every feature and forensic flag a card reads, at its presence thresholds and window lengths; planted definition defects; an automated check that every card-read feature has cases |
 | `reference_engine.py`, `golden/card_cases.yaml`, `test_card_golden.py` | The cards themselves: gates, exits, filters, confidence, ranking (including unrankable and conflicted inputs), sizing, tranches, the stop, construction, scale and the session policy, evaluated from the YAML; planted **card edits** must each break a case |
 | `reference_engine.run_pipeline`, `golden/pipeline_cases.yaml`, `test_pipeline.py` | End to end: a population through universe, filters, ranking, gates, size checks, capacity and quantities to the model portfolio and the published claims; planted defects (including every r5.5 behaviour the review of r5.5 found) must each break a case |
-| `mutation_check.py`, `golden/mutation_allowlist.yaml` | Fixture adequacy: every comparison, operator and constant in the two reference modules is mutated; each survivor must be a reviewed equivalent mutant with a written reason |
+| `mutation_check.py`, `golden/mutation_allowlist.yaml` | Fixture adequacy: comparisons, operators and constants across `reference_sim.py`, `reference_features.py` and `reference_engine.py` (including `Engine` methods, `run_pipeline`, selection/construction/capacity/quantity/publication paths) are mutated; each survivor must be a reviewed equivalent mutant with a written reason |
 
 Counts are in the README, never in prose.
 
@@ -49,7 +49,7 @@ Counts are in the README, never in prose.
 - `test_features.py` plants plausible misreadings of each feature's text.
 - `test_card_golden.py` edits the cards themselves. Examples: a 5% ROCE gate, a 4× ATR stop, `>=` turned into `>`, OR turned into AND, and a removed remainder clamp.
 
-A mutant that survives is a gap in the fixtures, and must be closed with a new case before any backtest counts. `mutation_check.py` then looks for gaps nobody planted.
+A mutant that survives is a gap in the fixtures, and must be closed with a new case before any backtest counts. `mutation_check.py` then looks for gaps nobody planted. Mutation outcomes are explicit: `killed`, `survived`, `timeout`, `equivalent`, or `infrastructure_error`. A worker that exits unexpectedly, produces malformed output, fails to initialise, or otherwise loses the harness is an **infrastructure error**: it never improves the detected score and makes the campaign fail non-zero. A timeout attributable to the mutant remains a detected mutant outcome.
 
 **Conformance.** M5, M6, M7 and M14 must expose equivalent functions and pass the same files unmodified. A production engine that disagrees with a reference on any case is wrong until proven otherwise, and the resolution is recorded in the issue log.
 
@@ -310,6 +310,17 @@ Consequences, stated so they cannot be traded away:
 - Price-band and surveillance coverage gaps are treated the same way, since both change simulated exits.
 
 ## 17. Items to confirm at Stage 0
+
+**r5.8/r5.9 market-data evidence gate before the first calibration/backtest:**
+
+- UDiFF source observations and the canonical strategy price must be reported separately; a non-canonical block-deal row cannot silently replace the regular-market bar.
+- Every historical session used for universe eligibility/no-trade inference must have a resolved MII master effective state. A master snapshot whose effective session is unresolved creates no eligibility/no-trade evidence.
+- `no_trade`, quarantine, missing source coverage and unresolved master state remain distinct in the run input and coverage report; zero-price or carried-forward synthetic trades are forbidden.
+- A complete-file withdrawal must resolve through a point-in-time tombstone, so exact-per-decision replays see the correction only after it became usable.
+- The same real-derived cases that motivated r5.8 (multi-series ISIN, ETF-vs-company classification, DVR, exchange dummy, metadata transition and eligible-but-absent state) must remain green.
+- Primary delivery evidence must come from a complete MTO source; full-bhav delivery is validation evidence and must never silently fill a missing MTO row. Reported delivery percentages are cross-checked against quantities, with mismatches recorded rather than overwritten.
+- Historical runs must report source coverage from the explicit catalogue. A price-band file that is only `captured_unparsed` contributes **no** band evidence and its period remains excluded wherever band state is material.
+- Before `band_close_state` is used as backtest evidence, a later Stage-0 acceptance must validate the price-band source's date/effective-session semantics and tick rounding against real exchange files.
 
 - The current NSE exchange charge, and stamp-duty sides, from an actual contract note
 - STT and stamp duty history before 2013 and 2020

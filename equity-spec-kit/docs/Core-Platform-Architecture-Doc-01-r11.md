@@ -1,6 +1,6 @@
-# Core Platform Architecture — Document 01 r9
+# Core Platform Architecture — Document 01 r11
 
-*Release r5.6 · 24 September 2026 · current state only; revision history is in the Issue Log*
+*Release r5.9 · 25 September 2026 · current state only; revision history is in the Issue Log*
 
 ## 1. Purpose, boundary and invariants
 
@@ -30,12 +30,12 @@ The platform continuously evaluates Indian listed equities across every active s
 | `reference_engine.py`, `reference_features.py`, `reference_sim.py` | Executable meaning of cards, features and simulation | Fixed by the golden files; production must match |
 | Document 03 | Explanation of the strategies; card sections **generated** from the YAML | Never authoritative over the YAML; parity-checked |
 | `schemas/*.json` | Closed shapes for cards, run manifests, portfolio policy, lifecycle transitions, holdout ledger | Machine form |
-| Document 04 r5 | Validation, simulation, costs, tax, golden cases, promotion statistics | Governs how backtests are run and judged |
+| Document 04 r7 | Validation, simulation, costs, tax, golden cases, promotion statistics | Governs how backtests are run and judged |
 | Document 05 *(before M12)* | AI evidence schema, threat model, model governance | Gate before any AI component |
 | Document 06 *(before dashboard)* | Presentation semantics | — |
 | Document 07 *(phased — §17)* | DDL, migrations, CI, deployment, operations, non-execution enforcement | Each control is due at the phase §17 names |
 
-**The controlling package is the set of files bound by `MANIFEST.json`.** An editable document is a draft until it is exported into the package and hashed. Two files live outside the package and control nothing in it: `START-HERE.md`, the project's status and handover note, and `audit/`, the audit reports and their reproduction scripts. On what the system is and does, the package wins.
+**The controlling package is the normative specifications, registry, schemas, cards, lifecycle records and executable references bound by `MANIFEST.json`.** An editable document is a draft until it is exported into the package and hashed. `START-HERE.md` is included in the release for status and handover convenience but is explicitly non-normative; it cannot override these specifications or executable contracts. `audit/`, when supplied separately, is non-controlling history. On what the system is and does, the normative package artefacts win.
 
 ## 3. Modules and flow
 
@@ -180,10 +180,10 @@ A card must satisfy `schemas/card.schema.json` (v6), which is **closed**: any fi
 
 **Model portfolios (M14): capacity.**
 
-- Each card's `construction` sets its maximum positions and capacity order.
+- Each card's `construction` sets its maximum positions and capacity order. A numeric `max_positions` is part of the strategy hypothesis: runtime orchestration may omit it or supply the same value, but a conflicting external value is an error. `OPEN` still requires the runtime value supplied by the pre-registered experiment.
 - Existing positions are never displaced.
-- New claims fill free slots in **rank order** (`rank_and_gate`), or in earliest-signal order (`gate_only`).
-- Only ranked candidates reach capacity: an unrankable security is not a candidate (§7), and `construct` refuses one. Ranks within the tie tolerance break on higher market cap, then ISIN.
+- New claims fill free slots according to the card's declared `capacity_order`: **rank order** for `rank_and_gate`, or the actual timezone-aware `signal_at` instant for `earliest_signal` / `gate_only`. Equal signal instants break on ISIN, making the result deterministic. A gate-only candidate is never given an artificial rank.
+- For rank capacity, only ranked candidates reach construction: an unrankable security is not a candidate (§7), and `construct` refuses one. Ranks within the tie tolerance break on higher market cap, then ISIN.
 - Each claim is sized at `min(target_value, spendable cash)`. Its model `hard_cap_value` is `min(notional_capital × max_position_pct, the cash allotted)`, so even the worst permitted fill never overdraws the model's cash. Residual cash stays uninvested.
 - `reference_engine.construct` and `run_pipeline` fix this.
 
@@ -208,7 +208,7 @@ A manual holding counts toward caps and "existing holding" priority but creates 
 
 ## 10. Strategy lifecycle and publication rights
 
-**A card version's status is held only in lifecycle transition records** (`lifecycle/transitions/*.json`, schema `strategy_lifecycle_transition.schema.json`): previous and new status, card SHA-256, decision, reason, and the evidence the transition requires. The card file carries no status, so a status change never changes a card's hash. `register_card.py` writes the first record; M17 writes the rest. The linter derives each card's status from the latest record for its exact hash and checks that the chain is continuous. Records are ordered by the **instant** in `decided_at`, which must carry a UTC offset, not by its text: `18:00+05:30` is earlier than `13:00Z`. Two records at the same instant, a record filed before one it was decided after, and a `decided_at` in the future are all errors. `register_card.py` stamps the real time.
+**A card version's status is held only in lifecycle transition records** (`lifecycle/transitions/*.json`, schema `strategy_lifecycle_transition.schema.json`): previous and new status, card SHA-256, decision, reason, and the evidence the transition requires. The card file carries no status, so a status change never changes a card's hash. `register_card.py` writes the first record; M17 writes the rest. The ledger/file order is authoritative: the linter follows that order, checks `from_status`/`to_status` continuity, parses every `decided_at` as a timezone-aware instant, and requires each later record to be **strictly later** than its predecessor. Equal instants (even when written with different offsets), backdated later records, missing offsets and future decisions are errors. Every evidence hash used by a transition is also bound to its relative evidence path; status resolution requires the file to exist, remain inside the lifecycle evidence area, be readable and recompute to the recorded SHA-256. Missing, moved or changed evidence invalidates the transition. `register_card.py` stamps the real time and records the evidence path it hashes.
 
 | From → to | Evidence required |
 | --- | --- |
@@ -271,7 +271,7 @@ Every price-state value is transformed by the corporate-action policy on ex-date
 ## 13. Storage and reproducibility
 
 - **Parquet is the source of truth**, written atomically, never edited, through one pre-write validator shared by every codec. DuckDB runs in memory over explicit file lists generated from a snapshot. No persistent database file exists.
-- **Every source file is landed first.** Its exact bytes are stored write-once under `_raw/<source_id>/<sha256>` before anything is parsed, and parsing reads that copy. A `raw_file` row, committed in the same batch as the observations, names it (Document 02 §12).
+- **Every source file is landed first.** Its exact bytes are stored write-once under `_raw/<source_id>/<sha256>` before anything is parsed, and parsing reads that copy. Landing/receipt is transaction 1: a durable `raw_file` receipt commits immediately after landing, even if parsing later fails. Parsing/observations are transaction 2 (Document 02 §12).
 - **Durability and the writer lock are per platform** (`eos/fsio.py`). A replace is durable through a directory fsync on POSIX, and through `MoveFileExW` with write-through on Windows, the warehouse machine's OS. A Windows sharing violation is retried with bounded backoff. The single writer holds an operating-system lock, released by the OS if the process dies, so a crash never leaves a stale lock.
 - **Run manifest** (`schemas/run_manifest.schema.json`). Every evaluation, backtest, shadow run and replay records:
   - both domain cutoffs, the trading date, and the data snapshot and its hash;
@@ -306,7 +306,7 @@ ASOF JOIN (
 
 This join serves single-row facts. **Multi-period fundamentals** (TTM, three- and five-year windows) are assembled by the period panel of Document 02 §7: each period at its latest version usable at the cutoff, with the basis decided as of the cutoff for the whole window.
 
-`row_cutoff_ts` is the evaluation cutoff of that trading date — 20:00 IST for disclosures — never midnight. For a live run, every row's cutoff equals the run's `as_of_ts`. `price_raw_resolved` returns, per `(isin, trade_date)`, the latest price version whose `usable_from` is at or before the cutoff (Document 02 §6). Two read contracts must not be confused:
+`row_cutoff_ts` is the evaluation cutoff of that trading date — 20:00 IST for disclosures — never midnight. For a live run, every row's cutoff equals the run's `as_of_ts`. For current UDiFF data, M5 first resolves immutable source observations by `(source_instrument_id, trade_date)` (legacy data falls back to ISIN + series), including point-in-time withdrawal tombstones. It then derives the canonical strategy price using the declared series policy; non-canonical observations such as block-deal `BL` remain auditable source evidence. `price_raw_resolved` therefore returns at most one canonical bar per economic security/date, while `source_prices_known_as_of` exposes all source rows (Document 02 §6). Two read contracts must not be confused:
 
 - **`history_known_as_of(E)`** gives the exact input of one decision at E.
 - **`point_in_time_panel(start, end)`** gives each bar as first known — the version usable at its own date's cutoff, or, for a bar first published after that cutoff, its first version with its real `usable_from`. **`panel_as_of(panel, E)`** is what one decision at E may use from it. Nothing a later decision had is dropped, and nothing it lacked is visible.
@@ -327,6 +327,10 @@ M11 diffs documents deterministically before M12 sees them. M12 returns structur
 
 ## 17. Build order and gates
 
+**r5.8 real-data gate (inherited).** Before broad historical ingestion, the price/security-reference slice must preserve all legitimate source observations, derive canonical regular-market prices without using BL/IQ/RL as substitutes, keep unknown master effective state fail-closed, distinguish no-trade from quarantine/source absence, and pass a modest multi-date UDiFF/MII sample. The MII filename/report date is never itself proof of effective session.
+
+**r5.9 market-data completion gate.** The MTO feed is the primary delivery observation; its declared date/count and reported percentage are checked without rewriting source values. `sec_bhavdata_full` is independent cross-check evidence only. Acquisition is source-catalogued and bytes-only until ingestion; coverage is explicit per date/source. Price-band files may be captured prospectively but cannot affect strategy state until their historical semantics are validated. No downloader or coverage tool bypasses raw landing, provenance, hash verification or the source policy.
+
 | Stage | Build | Gate before continuing |
 | --- | --- | --- |
 | 0 | Source adapters, XBRL prototype, M1, M2, coverage report, vendor bake-off | Document 02 §17 Stage 0 acceptance |
@@ -341,9 +345,9 @@ M11 diffs documents deterministically before M12 sees them. M12 returns structur
 
 | Before… | Controls |
 | --- | --- |
-| **Trusting any warehouse data** | Batch-atomic ingestion and crash recovery, a single writer lock, duplicate-identity failure, a codec-independent store validator, row quarantine (in place from r5.5); per-platform durable replace, an OS writer lock that a crash releases, and write-once raw landing (from r5.6). **The full M2 suite, and `run_all.py --require-parquet`, passing on the warehouse machine itself (Windows)**: the Windows code paths are exercised against an emulation elsewhere, which is not evidence that they work on Windows |
+| **Trusting any warehouse data** | Batch-atomic parsed ingestion and crash recovery, a single writer lock, source-identity validation, codec-independent schema validation, row quarantine; per-platform durable replace; write-once raw landing with pre-parse receipt; provenance and raw-blob SHA verification; UDiFF multi-series preservation; versioned MII master state with explicit effective-session semantics; and point-in-time tombstones for complete-file withdrawals. r5.7's fresh native Windows 11 / Python 3.12.10 / Parquet acceptance ended `ALL PASSED` on 25 September 2026. r5.8 must repeat that clean native-Windows `--require-parquet` gate before its warehouse data is certified. |
 | **Live capture begins** (the scheduled downloader) | `live_capture_start` set in the source policy, so no later file can be back-dated |
 | **Closing Stage 0** | Document 02 corrections from real files. Special-dividend semantics settled. The security-identity table populated from real ISIN changes |
-| **The first calibration or backtest run** | Append-only trial log and lineage holdout enforcement, executable rather than prose. Brinson–Fachler with cash defined, with golden cases (drawdown, rolling-window share and the promotion statistic exist from r5.5). A semantic run-manifest validator deriving each run's full artefact and feature closure. A parent/child identity for multi-date simulations. Every card sizing and construction parameter set (pre-registered). The mutation check green |
+| **The first calibration or backtest run** | Append-only trial log and lineage holdout enforcement, executable rather than prose. Brinson–Fachler with cash defined, with golden cases (drawdown, rolling-window share and the promotion statistic exist from r5.5). A semantic run-manifest validator deriving each run's full artefact and feature closure. A parent/child identity for multi-date simulations. Every card sizing and construction parameter set pre-registered and runtime-bound. `mutation_check.py` green across simulation, feature **and engine** references, with zero unexplained survivors and zero infrastructure errors. |
 | **Shadow operation** | Every transition's evidence resolved and verified. Actual-portfolio state and promoter-group map bound into decision lineage. Deployment, network, credential and order-endpoint controls. Kill-switch atomicity. Restore and replay tests. Counter-evidence coverage conditions (§12) |
 | **Production** | Executable retirement metrics. Defined shadow-versus-backtest tests with named estimators. Monitoring |

@@ -227,6 +227,7 @@ def run(verbose=True):
              ("duplicate strategy code across cards rejected", _dup_code_rejected()),
              ("A4 unrelated registry edits leave card pins intact; used-entry edits break them", _closure_is_scoped()),
              ("B7 lifecycle records validate, chain, and give each card its status", _lifecycle_records()),
+             ("B7 lifecycle evidence files are path- and hash-verified", _lifecycle_evidence_hashes()),
              ("register_card.py stamps the real time and refuses a future or offset-less --at", _register_card_refuses_bad_times()),
              ("real card ltqv_v1 passes", not lint(A, REG, SCHEMA)),
              ("real card mom_v1 passes", not lint(B, REG, SCHEMA))]
@@ -309,8 +310,7 @@ def _rec(n, at, frm="none", to="experimental", code="mom_v1", sha="a" * 64):
 
 
 def _lifecycle_records():
-    """B7 and the review of r5.5: records order by the instant decided, not the string; ties, future times,
-    missing offsets and out-of-file-order records are reported; the shipped records give each card its status."""
+    """Lifecycle ledger order is authoritative; decision instants must increase strictly in that order."""
     import datetime as _dt
     from speclint import load_transitions, lifecycle_status
     recs, errs = load_transitions(os.path.join(HERE, "lifecycle"))
@@ -321,23 +321,59 @@ def _lifecycle_records():
                   ("experimental", []) for c in ("ltqv_v1", "mom_v1"))
     now = _dt.datetime(2026, 9, 24, 14, 0, tzinfo=_dt.timezone.utc)
     st = lambda rs: lifecycle_status("mom_v1", "a" * 64, rs, now=now)  # noqa: E731
-    # 18:00+05:30 is 12:30Z, BEFORE 13:00Z although its string sorts after: the chain is none->experimental->shadow
-    mixed = [_rec(1, "2026-09-24T18:00:00+05:30"), _rec(2, "2026-09-24T13:00:00Z", "experimental", "shadow")]
-    by_instant = st(mixed)[0] == "shadow" and st(mixed)[2] == []
-    # string order would have put 0002 first and reported a broken chain; the reverse filing is itself reported
-    swapped = [_rec(1, "2026-09-24T13:00:00Z"), _rec(2, "2026-09-24T18:00:00+05:30", "experimental", "shadow")]
-    misfiled = any("filed before" in p for p in st(swapped)[2])
+    # Different offsets, but genuinely increasing instants: 12:30Z then 13:00Z.
+    increasing = [_rec(1, "2026-09-24T18:00:00+05:30"),
+                  _rec(2, "2026-09-24T13:00:00Z", "experimental", "shadow")]
+    increasing_ok = st(increasing)[0] == "shadow" and st(increasing)[2] == []
+    # A later ledger record may never be backdated, even when its status chain is otherwise structurally valid.
+    backdated = [_rec(1, "2026-09-24T13:00:00Z"),
+                 _rec(2, "2026-09-24T18:00:00+05:30", "experimental", "shadow")]
+    backdated_fails = any("earlier than" in p for p in st(backdated)[2])
     tie = any("same instant" in p for p in st([_rec(1, "2026-09-24T13:00:00Z"),
                                                _rec(2, "2026-09-24T18:30:00+05:30", "experimental", "shadow")])[2])
     future = any("future" in p for p in st([_rec(1, "2026-09-24T14:06:00Z")])[2])
     near_now_ok = st([_rec(1, "2026-09-24T14:04:00Z")])[2] == []
     naive = any("offset" in p for p in st([_rec(1, "2026-09-24T13:00:00")])[2])
     broken = bool(st([_rec(1, "2026-09-01T10:00:00+05:30", "experimental", "shadow")])[2])
-    checks = dict(shipped=shipped, by_instant=by_instant, misfiled=misfiled, tie=tie, future=future,
+    checks = dict(shipped=shipped, increasing_ok=increasing_ok, backdated_fails=backdated_fails, tie=tie, future=future,
                   near_now_ok=near_now_ok, naive=naive, broken=broken)
     if not all(checks.values()):
         print("   lifecycle:", {k: v for k, v in checks.items() if not v})
     return all(checks.values())
+
+
+def _lifecycle_evidence_hashes():
+    """Changed/deleted/repointed evidence or a forged recorded SHA invalidates lifecycle records."""
+    import tempfile
+    from speclint import load_transitions
+
+    def trial(kind):
+        d = tempfile.mkdtemp()
+        try:
+            life = os.path.join(d, "lifecycle")
+            shutil.copytree(os.path.join(HERE, "lifecycle"), life)
+            trans = sorted(os.listdir(os.path.join(life, "transitions")))[0]
+            tp = os.path.join(life, "transitions", trans)
+            rec = json.load(open(tp, encoding="utf-8"))
+            ep = os.path.join(life, *rec["evidence"]["linter_report_path"].split("/"))
+            if kind == "unchanged":
+                pass
+            elif kind == "changed":
+                with open(ep, "ab") as f: f.write(b"tamper")
+            elif kind == "deleted":
+                os.remove(ep)
+            elif kind == "path":
+                rec["evidence"]["linter_report_path"] = "reports/not-the-approved-file.txt"
+                json.dump(rec, open(tp, "w", encoding="utf-8", newline="\n"), indent=1)
+            elif kind == "sha":
+                rec["evidence"]["linter_report_sha256"] = "0" * 64
+                json.dump(rec, open(tp, "w", encoding="utf-8", newline="\n"), indent=1)
+            _, errs = load_transitions(life)
+            return not errs if kind == "unchanged" else bool(errs)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    return all(trial(k) for k in ("unchanged", "changed", "deleted", "path", "sha"))
 
 
 def _register_card_refuses_bad_times():
@@ -385,18 +421,19 @@ def _other_schemas_enforce_their_rules():
     base = {"transition_id": "t", "strategy_code": "ltqv_v1", "lineage": "ltqv", "card_sha256": h,
             "from_status": "none", "to_status": "experimental", "decided_by": "harsh",
             "decided_at": ts, "reason": "initial registration of the card",
-            "evidence": {"linter_report_sha256": h, "holdout_exposure_declaration": decl}}
+            "evidence": {"linter_report_sha256": h, "linter_report_path": "reports/lint.txt", "holdout_exposure_declaration": decl}}
     checks = [
         ("none->production rejected", bool(schema_errors({**base, "to_status": "production"}, life, life))),
         ("none->experimental accepted", not schema_errors(base, life, life)),
         # audit A4: registration must declare inherited holdout exposure
         ("none->experimental without a holdout-exposure declaration rejected",
-         bool(schema_errors({**base, "evidence": {"linter_report_sha256": h}}, life, life))),
+         bool(schema_errors({**base, "evidence": {"linter_report_sha256": h, "linter_report_path": "reports/lint.txt"}}, life, life))),
         ("experimental->shadow without a validation report rejected",
          bool(schema_errors({**base, "from_status": "experimental", "to_status": "shadow",
                              "evidence": {"backtest_run_ids": ["r"], "holdout_run_id": "h",
                                           "holdout_ledger_entry_id": "e", "golden_case_report_sha256": h,
-                                          "linter_report_sha256": h}}, life, life))),
+                                          "golden_case_report_path": "reports/golden.txt",
+                                          "linter_report_sha256": h, "linter_report_path": "reports/lint.txt"}}, life, life))),
         # review H2: production -> retired needs the retirement metric or data fault, like -> suspended
         ("production->retired with empty evidence rejected",
          bool(schema_errors({**base, "from_status": "production", "to_status": "retired", "evidence": {}}, life, life))),

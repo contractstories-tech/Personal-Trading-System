@@ -13,6 +13,7 @@
   "holdout_exposure_declaration": {
    "derived_from": [],
    "sealed_results_seen": []
-  }
+  },
+  "linter_report_path": "reports/mom_v1-1.0.0-prevalidation.9.lint.txt"
  }
 }

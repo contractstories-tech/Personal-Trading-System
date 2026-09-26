@@ -1,6 +1,6 @@
 # Source policy (Document 02 s2, s3). Versioned; every snapshot records the version it was built under.
 # Availability rules that were previously prose-only live here, and eos/source_policy.py enforces them.
-source_policy_version: 1.2.0
+source_policy_version: 1.4.0
 valid_from: "2000-01-01"
 
 # Backfill availability is set PER SOURCE (1.1.0; review B9): the bhavcopy and the delivery file are
@@ -22,8 +22,30 @@ sources:
     role: primary
     formats: [nse_mto_delivery]
     availability: {policy_lag_minutes: 0, inferred_published_time_ist: "22:30", inferred_basis: unverified}
+  nse_cm_security_master:
+    domain: exchange_eod
+    table: security_master_observation
+    role: reference
+    formats: [nse_cm_mii_security]
+    # Exchange guidance says members load the master before trading.  09:00 is still an unverified
+    # historical availability assumption; effective_session is independently required before use.
+    availability: {policy_lag_minutes: 0, inferred_published_time_ist: "09:00", inferred_basis: unverified}
+  nse_cm_full_bhav_delivery:
+    domain: exchange_eod
+    table: delivery_crosscheck_observation
+    role: validation_reference
+    formats: [nse_sec_bhavdata_full_delivery]
+    availability: {policy_lag_minutes: 0, inferred_published_time_ist: "22:30", inferred_basis: unverified}
+  nse_cm_price_band:
+    domain: exchange_eod
+    table: raw_file
+    role: reference_capture
+    formats: [unparsed_sec_list]
+    # r5.9 captures the official price-band file byte-exact now, but deliberately does not assign historical
+    # band_close_state until date semantics and tick rounding have been proven against real files.
+    availability: {policy_lag_minutes: 0, inferred_published_time_ist: "22:30", inferred_basis: unverified}
 
-# Backfill inference is only for history the system could not have captured live (1.2.0; audit B3b).
+# Backfill inference is only for history the system could not have captured live (1.3.0; inherited audit B3b).
 # live_capture_start: the first trade date captured live by the scheduled downloader. From that date on,
 #   every file must be ingested in live mode, so a replay can never "see" a file its live run did not have.
 #   null until live capture begins.
@@ -41,6 +63,7 @@ quality:
   row_count_warn_band: 0.05        # |today / prior - 1| above this -> warning (exact arithmetic)
   row_count_kill_ratio: 0.90       # today / prior below this -> kill switch, nothing written
   delivery_volume_tolerance: 0.001 # delivery file's traded qty vs bhavcopy volume
-  # 1.2.0 (audit C5): rows failing a row-level check are quarantined; the file is rejected only if the
+  delivery_pct_tolerance_pp: 0.02 # reported delivery percentage vs quantity-implied percentage, percentage points
+  # 1.3.0 (inherits audit C5): rows failing a row-level check are quarantined; the file is rejected only if the
   # quarantined share exceeds this. Adopted default, to be recalibrated on the batch-1 real files (S1b).
   max_quarantine_share: 0.05

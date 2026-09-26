@@ -2,8 +2,8 @@
 """Mutation check for the executable references (audit C1). The planted-defect lists in test_golden.py and
 test_features.py are regression tests for defects already found; this checks FIXTURE ADEQUACY instead.
 
-Every comparison, arithmetic operator, and/or, and numeric constant in reference_sim.py and
-reference_features.py is mutated one at a time (< <-> <=, > <-> >=, + <-> -, * <-> /, and <-> or, x1.1 or +1);
+Every comparison, arithmetic operator, and/or, and numeric constant in reference_sim.py,
+reference_features.py and reference_engine.py (including Engine methods) is mutated one at a time (< <-> <=, > <-> >=, + <-> -, * <-> /, and <-> or, x1.1 or +1);
 the module's golden cases must detect each mutant. A survivor fails the check unless it is listed, with a
 reason, in golden/mutation_allowlist.yaml as an equivalent mutant (for example the rounding precision of an
 output field). A new survivor therefore means a missing golden case - add the case, do not widen the list.
@@ -14,8 +14,9 @@ output field). A new survivor therefore means a missing golden case - add the ca
 
 Cross-platform (r5.6). r5.5 bounded each mutant with signal.SIGALRM, which does not exist on Windows. Mutants now
 run in worker processes (this file with --worker) that report one line per mutant; the parent enforces the
-per-mutant time limit by watching for that line and kills a worker that stops reporting. A mutant that hangs
-counts as detected, as before, and the worker is restarted after it. No signals, so it runs the same on Windows.
+per-mutant time limit by watching for that line and kills a worker that stops reporting. A mutant-induced timeout
+is a distinct ``timeout`` result and still counts as detected; an unexpected worker exit, malformed worker output or
+worker initialisation failure is ``infrastructure_error`` and fails the campaign. No signals, so it runs the same on Windows.
 """
 import ast
 import copy
@@ -41,28 +42,37 @@ STARTUP_SECONDS = 120   # a worker's imports and golden-file loading
 TAG = "@@mutant"
 
 
+def _function_nodes(tree):
+    """Functions in mutation scope: all top-level functions, plus Engine methods in reference_engine.py."""
+    out = [(n.name, n) for n in tree.body if isinstance(n, ast.FunctionDef)]
+    eng = next((n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Engine"), None)
+    if eng is not None:
+        out += [(f"Engine.{n.name}", n) for n in eng.body if isinstance(n, ast.FunctionDef)]
+    return out
+
+
 def _sites(tree):
     out = []
-    for fn in [n for n in tree.body if isinstance(n, ast.FunctionDef)]:
+    for qualname, fn in _function_nodes(tree):
         for i, node in enumerate(ast.walk(fn)):
             if isinstance(node, ast.Compare) and len(node.ops) == 1 and type(node.ops[0]) in SWAP:
-                out.append((fn.name, i, "cmp", node.lineno))
+                out.append((qualname, i, "cmp", node.lineno))
             elif isinstance(node, ast.BinOp) and type(node.op) in SWAP:
-                out.append((fn.name, i, "bin", node.lineno))
+                out.append((qualname, i, "bin", node.lineno))
             elif isinstance(node, ast.BoolOp) and type(node.op) in SWAP:
-                out.append((fn.name, i, "bool", node.lineno))
+                out.append((qualname, i, "bool", node.lineno))
             elif isinstance(node, ast.Constant) and type(node.value) in (int, float) and node.value not in (0, 1):
-                out.append((fn.name, i, "const", node.lineno))
+                out.append((qualname, i, "const", node.lineno))
     return out
 
 
 def _mutate(tree, site):
-    fn_name, idx, kind, _ = site
+    qualname, idx, kind, _ = site
     t = copy.deepcopy(tree)
-    fn = next(n for n in t.body if isinstance(n, ast.FunctionDef) and n.name == fn_name)
+    fn = dict(_function_nodes(t))[qualname]
     node = list(ast.walk(fn))[idx]
     if kind == "cmp":
-        node.ops = [SWAP[type(node.ops[0])]()]
+        node.ops = [SWAP[type(node.ops[0])]() ]
     elif kind in ("bin", "bool"):
         node.op = SWAP[type(node.op)]()
     else:
@@ -73,8 +83,12 @@ def _mutate(tree, site):
 def _detectors():
     import test_golden as TG
     import test_features as TF
+    import test_card_golden as TC
+    import test_pipeline as TP
     return {"reference_sim": lambda: any(not TG.close(g, w, t) for _, g, w, t in TG.cases()),
-            "reference_features": lambda: any(not TG.close(g, w, 1e-6) for _, g, w in TF.cases())}
+            "reference_features": lambda: any(not TG.close(g, w, 1e-6) for _, g, w in TF.cases()),
+            "reference_engine": lambda: bool(TC.run(verbose=False) or TP.run(verbose=False) or
+                                             (not TC.engine_enforces_the_cap_whatever_the_card_says()))}
 
 
 def _load(module_name):
@@ -84,41 +98,52 @@ def _load(module_name):
 
 
 def worker(module_name, start, stop):
-    """Runs mutants start..stop-1 of one module in this process; prints '@@mutant <index> <caught 0|1>' as each
-    finishes. Any exception from a mutant, including one raised while building it, counts as detected."""
+    """Run mutants and report one explicit semantic outcome per mutant.
+
+    Exceptions caused by executing the mutant count as ``killed``. Failures before a mutant can be executed are
+    infrastructure failures and are intentionally left for the parent to diagnose from the non-zero worker exit.
+    """
     detect = _detectors()[module_name]
     mod = __import__(module_name)
     tree, _, sites = _load(module_name)
     originals = {k: getattr(mod, k) for k in dir(mod) if callable(getattr(mod, k)) and not k.startswith("__")}
     for i in range(start, stop):
+        if os.environ.get("EOS_MUTATION_SELF_KILL") == "1":
+            os._exit(7)
         m = types.ModuleType("mutant")
-        m.__dict__.update({k: v for k, v in mod.__dict__.items() if k.startswith("__") is False})
+        m.__dict__.update({k: v for k, v in mod.__dict__.items() if not k.startswith("__")})
         try:
             exec(compile(_mutate(tree, sites[i]), "mutant", "exec"), m.__dict__)
         except Exception:
-            print(f"{TAG} {i} 1", flush=True)
+            print(f"{TAG} {i} killed", flush=True)
             continue
         for k in originals:
             if hasattr(m, k):
                 setattr(mod, k, getattr(m, k))
         try:
-            caught = detect()
-        except BaseException:
-            caught = True
+            try:
+                caught = detect()
+                outcome = "killed" if caught else "survived"
+            except BaseException:
+                # A mutant that makes the executable reference raise under a previously valid golden is killed.
+                outcome = "killed"
         finally:
             for k, v in originals.items():
                 setattr(mod, k, v)
-        print(f"{TAG} {i} {int(bool(caught))}", flush=True)
+        print(f"{TAG} {i} {outcome}", flush=True)
+    # Regression hook: prove that a worker which reports its last mutant and then dies is still infrastructure
+    # failure, not a clean campaign. Production runs never set this environment variable.
+    if os.environ.get("EOS_MUTATION_SELF_KILL_AFTER") == "1":
+        os._exit(7)
 
 
 def _run_range(module_name, start, stop):
-    """Drives workers over [start, stop): returns {index: caught}. A worker silent for MUTANT_SECONDS is killed,
-    the mutant it was running is recorded as detected (it hung), and a new worker resumes after it."""
-    results = {}
+    """Drive workers over [start, stop), preserving timeout vs infrastructure failure."""
+    results, infra = {}, []
     nxt = start
     while nxt < stop:
         proc = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--worker", module_name, str(nxt), str(stop)],
-                                cwd=HERE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
+                                cwd=HERE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
         lines = queue.Queue()
         threading.Thread(target=lambda: ([lines.put(x) for x in proc.stdout], lines.put(None)), daemon=True).start()
         limit = STARTUP_SECONDS + MUTANT_SECONDS
@@ -126,27 +151,62 @@ def _run_range(module_name, start, stop):
             try:
                 line = lines.get(timeout=limit)
             except queue.Empty:
-                proc.kill()
-                proc.wait()
-                results[nxt] = True        # hung: detected
+                proc.kill(); proc.wait()
+                results[nxt] = "timeout"
                 nxt += 1
                 break
-            if line is None:               # worker exited
+            if line is None:
                 proc.wait()
-                if nxt < stop:             # it died on this mutant (e.g. a crash outside Python): detected
-                    results[nxt] = True
+                if nxt < stop:
+                    err = proc.stderr.read().strip() if proc.stderr else ""
+                    results[nxt] = "infrastructure_error"
+                    infra.append({"module": module_name, "index": nxt, "exit_code": proc.returncode,
+                                  "detail": err[-500:] or "worker exited before reporting a result"})
                     nxt += 1
                 break
-            if line.startswith(TAG):
-                _, i, caught = line.split()
-                results[int(i)] = caught == "1"
-                nxt = int(i) + 1
-                limit = MUTANT_SECONDS
-                if nxt >= stop:
-                    proc.wait()
-                    break
-        proc.stdout.close()
-    return results
+            if not line.startswith(TAG):
+                continue
+            parts = line.split()
+            if len(parts) != 3 or parts[2] not in {"killed", "survived"}:
+                proc.kill(); proc.wait()
+                results[nxt] = "infrastructure_error"
+                infra.append({"module": module_name, "index": nxt, "exit_code": proc.returncode,
+                              "detail": f"malformed worker output: {line.strip()!r}"})
+                nxt += 1
+                break
+            _, i, outcome = parts
+            try:
+                i = int(i)
+            except ValueError:
+                proc.kill(); proc.wait()
+                results[nxt] = "infrastructure_error"
+                infra.append({"module": module_name, "index": nxt, "exit_code": proc.returncode,
+                              "detail": f"malformed mutant index: {line.strip()!r}"})
+                nxt += 1
+                break
+            if i != nxt:
+                proc.kill(); proc.wait()
+                results[nxt] = "infrastructure_error"
+                infra.append({"module": module_name, "index": nxt, "exit_code": proc.returncode,
+                              "detail": f"worker reported mutant {i}, expected {nxt}"})
+                nxt += 1
+                break
+            results[i] = outcome
+            nxt = i + 1
+            limit = MUTANT_SECONDS
+            if nxt >= stop:
+                proc.wait()
+                if proc.returncode != 0:
+                    err = proc.stderr.read().strip() if proc.stderr else ""
+                    results[i] = "infrastructure_error"
+                    infra.append({"module": module_name, "index": i, "exit_code": proc.returncode,
+                                  "detail": err[-500:] or "worker exited non-zero after its final result"})
+                break
+        if proc.stdout:
+            proc.stdout.close()
+        if proc.stderr:
+            proc.stderr.close()
+    return results, infra
 
 
 def survivors(module_name, jobs):
@@ -154,14 +214,21 @@ def survivors(module_name, jobs):
     n = len(sites)
     size = max(1, -(-n // (jobs * 3)))
     ranges = [(a, min(a + size, n)) for a in range(0, n, size)]
-    results = {}
+    results, infra = {}, []
     with ThreadPoolExecutor(max_workers=jobs) as ex:
-        for r in ex.map(lambda ab: _run_range(module_name, *ab), ranges):
-            results.update(r)
-    assert sorted(results) == list(range(n)), "every mutant must report"
+        for r, e in ex.map(lambda ab: _run_range(module_name, *ab), ranges):
+            results.update(r); infra += e
+    missing = sorted(set(range(n)) - set(results))
+    if missing:
+        infra.append({"module": module_name, "index": missing[0], "exit_code": None,
+                      "detail": f"{len(missing)} mutant(s) did not report"})
+        for i in missing:
+            results[i] = "infrastructure_error"
     out = [{"module": module_name, "function": sites[i][0], "kind": sites[i][2],
-            "line": lines[sites[i][3] - 1].strip()} for i in range(n) if not results[i]]
-    return out, n
+            "line": lines[sites[i][3] - 1].strip()} for i in range(n) if results[i] == "survived"]
+    counts = {name: sum(v == name for v in results.values())
+              for name in ("killed", "survived", "timeout", "infrastructure_error")}
+    return out, n, counts, infra
 
 
 def main():
@@ -171,26 +238,34 @@ def main():
     allowed = {}
     for a in allow:
         allowed[key(a)] = allowed.get(key(a), 0) + a.get("count", 1)
-    found, total = [], 0
-    for module in ("reference_sim", "reference_features"):
-        s, n = survivors(module, jobs)
-        found += s
+    found, total, outcome_counts, infrastructure = [], 0, {}, []
+    for module in ("reference_sim", "reference_features", "reference_engine"):
+        surv, n, counts, infra = survivors(module, jobs)
+        found += surv
         total += n
+        infrastructure += infra
+        for k, v in counts.items():
+            outcome_counts[k] = outcome_counts.get(k, 0) + v
     counts = {}
     for s in found:
         counts[key(s)] = counts.get(key(s), 0) + 1
     unlisted = {k: c - allowed.get(k, 0) for k, c in counts.items() if c > allowed.get(k, 0)}
     stale = [k for k in allowed if k not in counts]
-    print(f"mutation sites: {total}   survivors: {len(found)}   allowlisted equivalent: {len(found) - sum(unlisted.values())}"
-          f"   unlisted: {sum(unlisted.values())}   raw score {1 - len(found) / total:.0%}")
+    equivalent = len(found) - sum(unlisted.values())
+    detected = outcome_counts.get("killed", 0) + outcome_counts.get("timeout", 0)
+    print(f"mutation sites: {total}   killed: {outcome_counts.get('killed', 0)}   timeout: {outcome_counts.get('timeout', 0)}"
+          f"   survivors: {len(found)}   equivalent: {equivalent}   unlisted: {sum(unlisted.values())}"
+          f"   infrastructure_error: {outcome_counts.get('infrastructure_error', 0)}   detected score {detected / total:.0%}")
     if "--list" in sys.argv:
         for k, c in sorted(counts.items()):
             print(f"  {'allowed ' if k not in unlisted else 'UNLISTED'} x{c} {k[0]}.{k[1]} {k[2]}: {k[3][:90]}")
     for k, c in sorted(unlisted.items()):
         print(f"UNLISTED SURVIVOR x{c}: {k[0]}.{k[1]} {k[2]}: {k[3][:100]}  -> add a golden case")
+    for e in infrastructure:
+        print(f"INFRASTRUCTURE_ERROR: {e['module']} mutant {e['index']} exit={e['exit_code']}: {e['detail']}")
     for k in stale:
         print(f"note: allowlist entry no longer needed: {k[0]}.{k[1]} {k[2]}: {k[3][:80]}")
-    sys.exit(1 if unlisted else 0)
+    sys.exit(1 if unlisted or infrastructure else 0)
 
 
 if __name__ == "__main__":

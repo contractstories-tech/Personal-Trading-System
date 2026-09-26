@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runs every contract command with THIS interpreter and prints one line per command (r5.6).
+"""Runs every contract command with THIS interpreter and prints one line per command (r5.9).
 
     python run_all.py                     every command; exit 0 = all passed
     python run_all.py --require-parquet   also fail if the Parquet codec could not run (the warehouse machine)
@@ -14,6 +14,7 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -25,7 +26,8 @@ def commands(argv):
             ["render_cards.py", "--check", os.path.relpath(doc03[-1], HERE) if doc03 else "docs/<Doc 03 missing>"],
             ["test_golden.py"], ["test_features.py"], ["test_card_golden.py"], ["test_pipeline.py"],
             ["tests/test_m2.py"] + (["--require-parquet"] if "--require-parquet" in argv else []),
-            ["tests/test_manifest.py"], ["tests/test_release.py"], ["tests/test_portability.py"]]
+            ["tests/test_catalog.py"], ["tests/test_manifest.py"], ["tests/test_release.py"], ["tests/test_portability.py"],
+            ["tests/test_mutation.py"]]
     if "--quick" not in argv:
         cmds.append(["mutation_check.py"])
     if "--pytest" in argv:
@@ -35,7 +37,7 @@ def commands(argv):
 
 def versions():
     out = [f"{platform.system()} {platform.release()}", f"Python {platform.python_version()} ({sys.executable})"]
-    for mod in ("yaml", "pyarrow", "pytest"):
+    for mod in ("yaml", "pyarrow", "pytest", "tzdata"):
         try:
             out.append(f"{mod} {__import__(mod).__version__}")
         except ImportError:
@@ -53,13 +55,18 @@ def main(argv):
         log.write(head + "\n")
         for c in commands(argv):
             t0 = time.monotonic()
-            p = subprocess.run([sys.executable] + c, cwd=HERE, capture_output=True, text=True, encoding="utf-8",
-                               errors="replace", env=env)
+            # Use temporary files rather than nested stdout/stderr pipes. Some long suites exercise processes/threads;
+            # file-backed capture avoids pipe inheritance/back-pressure pathologies while preserving the exact log.
+            with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+                p = subprocess.run([sys.executable] + c, cwd=HERE, stdout=out_f, stderr=err_f, env=env)
+                out_f.seek(0); err_f.seek(0)
+                stdout = out_f.read().decode("utf-8", errors="replace")
+                stderr = err_f.read().decode("utf-8", errors="replace")
             secs = time.monotonic() - t0
-            tail = (p.stdout.strip().splitlines() or [""])[-1][:100]
+            tail = (stdout.strip().splitlines() or [""])[-1][:100]
             line = f"{'PASS' if p.returncode == 0 else 'FAIL'}  {' '.join(c):58s} {secs:6.1f}s  {tail}"
             print(line, flush=True)
-            log.write(f"\n===== {line}\n{p.stdout}\n{p.stderr}\n")
+            log.write(f"\n===== {line}\n{stdout}\n{stderr}\n")
             if p.returncode != 0:
                 failed.append(" ".join(c))
     print(f"\n{'ALL PASSED' if not failed else 'FAILED: ' + '; '.join(failed)}   (full output: run_all.log)")

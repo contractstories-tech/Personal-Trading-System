@@ -112,7 +112,7 @@ def crlf_is_named_by_verify():
 
 SUITES = [["make_manifest.py", "--verify"], ["test_speclint.py"], ["speclint.py"], ["test_golden.py"],
           ["test_features.py"], ["test_card_golden.py"], ["test_pipeline.py"], ["tests/test_m2.py"],
-          ["tests/test_release.py"], ["tests/test_manifest.py"], ["mutation_check.py", "--worker", "reference_sim", "0", "5"]]
+          ["tests/test_catalog.py"], ["tests/test_release.py"], ["tests/test_manifest.py"], ["mutation_check.py", "--worker", "reference_sim", "0", "5"]]
 
 
 def _run_strict(cmd):

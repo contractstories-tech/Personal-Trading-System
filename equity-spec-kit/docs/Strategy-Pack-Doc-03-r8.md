@@ -1,6 +1,6 @@
 # Strategy Pack — Document 03 r8
 
-*Release r5.6 · 24 September 2026 · current state only · card sections generated from `strategies/*.yaml` by `render_cards.py` · cards pinned to their registry 3.1.0 closures*
+*Release r5.9 · 25 September 2026 · current state only · card sections generated from `strategies/*.yaml` by `render_cards.py` · cards pinned to their registry 3.1.0 closures*
 
 ## 1. How strategies work
 

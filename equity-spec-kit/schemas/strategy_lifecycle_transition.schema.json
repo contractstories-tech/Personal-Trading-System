@@ -132,8 +132,58 @@
       }
      },
      "description": "Lineages this card derives from, and lineages whose sealed holdout results its author has seen. The card's lineage inherits every exposure of both (Doc 04 s7)."
+    },
+    "golden_case_report_path": {
+     "type": "string",
+     "minLength": 1
+    },
+    "linter_report_path": {
+     "type": "string",
+     "minLength": 1
+    },
+    "validation_report_path": {
+     "type": "string",
+     "minLength": 1
     }
-   }
+   },
+   "allOf": [
+    {
+     "if": {
+      "required": [
+       "golden_case_report_sha256"
+      ]
+     },
+     "then": {
+      "required": [
+       "golden_case_report_path"
+      ]
+     }
+    },
+    {
+     "if": {
+      "required": [
+       "linter_report_sha256"
+      ]
+     },
+     "then": {
+      "required": [
+       "linter_report_path"
+      ]
+     }
+    },
+    {
+     "if": {
+      "required": [
+       "validation_report_sha256"
+      ]
+     },
+     "then": {
+      "required": [
+       "validation_report_path"
+      ]
+     }
+    }
+   ]
   }
  },
  "allOf": [

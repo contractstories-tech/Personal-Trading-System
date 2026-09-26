@@ -16,7 +16,7 @@ names its batch, and a part whose batch has no commit record is refused.
 
 All writes happen inside Warehouse.writer(): one exclusive lock held for the whole read-latest ->
 allocate-version -> commit sequence, so two ingestions cannot allocate the same version. A duplicate
-(isin, trade_date, version_no) is still checked at read time and is a hard IntegrityError.
+(source observation identity, trade_date, version_no) is checked at read time and is a hard IntegrityError.
 
 Readers never glob: they read manifests, or a snapshot of manifests taken earlier, and verify every
 part's hash.
@@ -40,7 +40,7 @@ D4 = decimal.Decimal("0.0001")
 
 TABLES = {
     "price_observation": {
-        "isin": "str", "trade_date": "date", "version_no": "int", "series": "str", "symbol": "str",
+        "source_instrument_id": "str", "isin": "str", "trade_date": "date", "version_no": "int", "series": "str", "symbol": "str",
         "open": "dec", "high": "dec", "low": "dec", "close": "dec", "prev_close": "dec",
         "volume": "int", "traded_value": "dec", "num_trades": "int",
         "source_id": "str", "source_format": "str", "file_sha256": "str",
@@ -48,8 +48,16 @@ TABLES = {
         "system_available_at": "ts", "usable_from": "ts", "availability_inferred": "bool",
         "supersedes_version": "int", "domain": "str"},
     "delivery_observation": {
-        "isin": "str", "trade_date": "date", "version_no": "int", "series": "str", "symbol": "str",
-        "delivery_qty": "int", "traded_qty_reported": "int",
+        "source_instrument_id": "str", "isin": "str", "trade_date": "date", "version_no": "int", "series": "str", "symbol": "str",
+        "delivery_qty": "int", "traded_qty_reported": "int", "delivery_pct_reported": "dec",
+        "source_id": "str", "source_format": "str", "file_sha256": "str",
+        "source_published_at": "ts", "received_at": "ts", "effective_from": "ts",
+        "system_available_at": "ts", "usable_from": "ts", "availability_inferred": "bool",
+        "supersedes_version": "int", "domain": "str"},
+    # r5.9: independent full-bhavcopy delivery evidence used to cross-check the primary MTO feed.
+    "delivery_crosscheck_observation": {
+        "source_instrument_id": "str", "isin": "str", "trade_date": "date", "version_no": "int", "series": "str", "symbol": "str",
+        "delivery_available": "bool", "delivery_qty": "int", "traded_qty_reported": "int", "delivery_pct_reported": "dec",
         "source_id": "str", "source_format": "str", "file_sha256": "str",
         "source_published_at": "ts", "received_at": "ts", "effective_from": "ts",
         "system_available_at": "ts", "usable_from": "ts", "availability_inferred": "bool",
@@ -61,16 +69,41 @@ TABLES = {
         "file_sha256": "str", "source_id": "str", "trade_date": "date", "received_at": "ts",
         "rows_new": "int", "rows_changed": "int", "rows_unchanged": "int", "mode": "str"},
     "data_conflict": {
-        "table_name": "str", "isin": "str", "trade_date": "date", "kind": "str", "detail": "str",
+        "table_name": "str", "source_instrument_id": "str", "isin": "str", "series": "str", "trade_date": "date", "kind": "str", "detail": "str",
         "file_sha256": "str", "logged_at": "ts"},
     # r5.5 (audit C5): a defective row is quarantined, not allowed to reject the whole file
     "row_quarantine": {
-        "table_name": "str", "trade_date": "date", "isin": "str", "symbol": "str", "series": "str",
+        "table_name": "str", "trade_date": "date", "source_instrument_id": "str", "isin": "str", "symbol": "str", "series": "str",
         "reason": "str", "detail": "str", "file_sha256": "str", "logged_at": "ts"},
-    # r5.6: every source file is landed byte-for-byte before it is parsed; this row names the landed copy
+    # r5.8: explicit withdrawal of a source observation by a later complete-file reissue.
+    "observation_tombstone": {
+        "table_name": "str", "source_instrument_id": "str", "isin": "str", "series": "str",
+        "trade_date": "date", "version_no": "int", "source_id": "str", "file_sha256": "str",
+        "received_at": "ts", "usable_from": "ts", "availability_inferred": "bool",
+        "supersedes_version": "int", "reason": "str", "domain": "str"},
+    # r5.8: versioned NSE MII security-master observations.  effective_session is deliberately nullable;
+    # an unresolved master version is stored as evidence but cannot silently govern a historical session.
+    "security_master_observation": {
+        "source_instrument_id": "str", "master_file_date": "date", "version_no": "int",
+        "symbol": "str", "series": "str", "name": "str", "isin": "str",
+        "instrument_type": "int", "normal_market_status": "int", "normal_market_eligibility": "int",
+        "price_range_text": "str", "price_range_type": "str", "max_price": "dec", "min_price": "dec", "tick_size": "dec",
+        "delete_flag": "str", "is_dummy": "bool", "status_code_known": "bool",
+        "security_class": "str", "market_eligible": "bool",
+        "effective_session": "date", "effective_session_basis": "str",
+        "source_id": "str", "source_format": "str", "file_sha256": "str",
+        "source_published_at": "ts", "received_at": "ts", "effective_from": "ts",
+        "system_available_at": "ts", "usable_from": "ts", "availability_inferred": "bool",
+        "supersedes_version": "int", "domain": "str"},
+    # r5.7: a receipt is committed as soon as landed bytes are durable, before parsing starts.
     "raw_file": {
         "source_id": "str", "file_sha256": "str", "original_name": "str", "source_url": "str",
-        "retrieved_at": "ts", "received_at": "ts", "size_bytes": "int", "landed_path": "str"},
+        "retrieved_at": "ts", "received_at": "ts", "size_bytes": "int", "landed_path": "str",
+        "acquisition_method": "str"},
+    # Parsing is a separate transaction. Structural/parser rejection is evidence, not grounds to erase receipt.
+    "raw_parse_event": {
+        "source_id": "str", "file_sha256": "str", "received_at": "ts", "parsed_at": "ts",
+        "status": "str", "source_format": "str", "trade_date": "date", "parse_error": "str"},
 }
 
 
@@ -324,6 +357,35 @@ class Warehouse:
     def raw_path(self, landed_path):
         return os.path.join(self.root, *landed_path.split("/"))
 
+    def verify_raw_integrity(self, receipts=None):
+        """Re-hash landed raw blobs against durable receipts; raise on missing, moved or changed evidence.
+
+        Ordinary metadata reads need not pay this cost. Snapshot creation does, because a snapshot is an assertion
+        that the evidence set is intact and suitable for replay/backtest evidence freezing.
+        """
+        receipts = self.read("raw_file") if receipts is None else receipts
+        base = os.path.realpath(os.path.join(self.root, "_raw"))
+        checked = 0
+        for r in receipts:
+            rel = r["landed_path"]
+            path = os.path.realpath(self.raw_path(rel))
+            try:
+                inside = os.path.commonpath([base, path]) == base
+            except ValueError:
+                inside = False
+            if not inside:
+                raise IntegrityError(f"raw_file {r['file_sha256'][:12]}: landed_path {rel!r} is outside _raw")
+            if not os.path.isfile(path):
+                raise IntegrityError(f"raw_file {r['file_sha256'][:12]}: landed blob {rel} is missing")
+            data = fsio.read_bytes(path)
+            got = hashlib.sha256(data).hexdigest()
+            if got != r["file_sha256"]:
+                raise IntegrityError(f"raw_file {r['file_sha256'][:12]}: landed blob {rel} hashes to {got}")
+            if len(data) != r["size_bytes"]:
+                raise IntegrityError(f"raw_file {r['file_sha256'][:12]}: landed blob {rel} size {len(data)} != receipt {r['size_bytes']}")
+            checked += 1
+        return checked
+
     def batch(self):
         if not self._held or self._owner != threading.get_ident():
             raise StoreError("writes need Warehouse.writer(): the lock must span read, version and commit")
@@ -383,8 +445,12 @@ class Warehouse:
 
     # ---- reads
     def snapshot(self):
-        """Every partition's listed parts, frozen. Reads under a snapshot never see later parts."""
+        """Every partition's listed parts, frozen. Reads under a snapshot never see later parts.
+
+        Snapshot creation is also an integrity assertion, so every durable raw receipt is re-hashed first.
+        """
         self._consistent()
+        self.verify_raw_integrity()
         snap = {}
         for t in TABLES:
             for k in self.partitions(t):

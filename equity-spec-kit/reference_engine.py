@@ -419,18 +419,42 @@ class Engine:
 
 
 # ---------------------------------------------------------------- construction and scale (audit A3)
-def construct(candidates, held, max_positions, cash, tol=1e-9):
-    """Model-portfolio capacity per card construction (capacity_order: rank). candidates: [{isin, rank,
-    market_cap, target_value}]. Existing positions are never displaced. New claims are taken in rank order (ranks
-    within tol tie and break on higher market cap, then ISIN) while a slot and spendable cash remain; each is
-    sized min(target_value, cash). Returns (taken, not_taken). An unrankable security is not a candidate
-    (evaluation_semantics 1.1.0): r5.5 admitted it after the ranked claims, so with spare capacity a security the
-    card could not score entered the model portfolio. Passing one here is a caller error."""
-    unrankable = sorted(c["isin"] for c in candidates if c["rank"] is None)
-    if unrankable:
-        raise ValueError(f"unrankable securities are not candidates: {unrankable}")
-    order = [r for r in R.rank_order([{"isin": c["isin"], "score": float(c["rank"]), "market_cap": c["market_cap"]}
-                                      for c in candidates], tol)]
+def _signal_instant(value):
+    """Normalise a signal timestamp for deterministic earliest-signal capacity ordering.
+
+    The pipeline accepts either an aware datetime or an RFC 3339 string with an offset. A date without a time is
+    deliberately insufficient: two signals on the same trading day can still have a real ordering.
+    """
+    if isinstance(value, str):
+        try:
+            value = dt.datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+        except ValueError:
+            raise ValueError(f"signal_at {value!r} is not an RFC 3339 timestamp") from None
+    if not isinstance(value, dt.datetime) or value.tzinfo is None:
+        raise ValueError("earliest_signal capacity requires an aware signal_at timestamp for every candidate")
+    return value.astimezone(dt.timezone.utc)
+
+
+def construct(candidates, held, max_positions, cash, tol=1e-9, capacity_order="rank"):
+    """Model-portfolio capacity per the card's declared construction.capacity_order.
+
+    ``rank`` requires every candidate to carry a rank and preserves the existing score / market-cap / ISIN tie
+    break. ``earliest_signal`` requires every candidate to carry ``signal_at`` and orders by the actual aware
+    instant, breaking exact ties by ISIN. Existing positions are never displaced. Returns (taken, not_taken).
+    """
+    if capacity_order == "rank":
+        unrankable = sorted(c["isin"] for c in candidates if c.get("rank") is None)
+        if unrankable:
+            raise ValueError(f"unrankable securities are not candidates: {unrankable}")
+        order = [r for r in R.rank_order([{"isin": c["isin"], "score": float(c["rank"]),
+                                          "market_cap": c["market_cap"]} for c in candidates], tol)]
+    elif capacity_order == "earliest_signal":
+        missing = sorted(c["isin"] for c in candidates if c.get("signal_at") is None)
+        if missing:
+            raise ValueError(f"earliest_signal capacity needs signal_at for candidates: {missing}")
+        order = [c["isin"] for c in sorted(candidates, key=lambda c: (_signal_instant(c["signal_at"]), c["isin"]))]
+    else:
+        raise ValueError(f"unsupported capacity_order {capacity_order!r}")
     by = {c["isin"]: c for c in candidates}
     slots, taken, rest = max_positions - len(held), [], []
     for i in order:
@@ -444,6 +468,18 @@ def construct(candidates, held, max_positions, cash, tol=1e-9):
         else:
             rest.append(i)
     return taken, rest
+
+
+def _resolve_max_positions(card, supplied):
+    """Resolve construction capacity without allowing orchestration to rewrite the card's hypothesis."""
+    declared = card["construction"]["max_positions"]
+    if declared == "OPEN":
+        if supplied is None:
+            raise ValueError("construction.max_positions is OPEN; the run must supply its pre-registered value")
+        return supplied
+    if supplied is not None and supplied != declared:
+        raise ValueError(f"max_positions mismatch: card declares {declared}, runtime supplied {supplied}")
+    return declared
 
 
 def actual_target(target_value, notional_capital, total_capital, headroom):
@@ -474,7 +510,7 @@ def weekly_sessions(calendar, weekday, reg):
 
 # ---------------------------------------------------------------- one evaluation, universe to published claims (r5.6)
 def run_pipeline(card, reg, params, population, held=(), cash=None, max_positions=None):
-    """One rank_and_gate evaluation of one card, end to end, as Doc 01 s7-s9 order it (review of r5.5: r5.5 had
+    """One strategy evaluation end to end, as Doc 01 s7-s9 order it (review of r5.5: r5.5 had
     goldens for each stage but none for the chain, so a population could pass every unit case and still produce
     the wrong claims). population: {isin: {"features": {...}, "sector": code, "market_eligible": bool,
     "market_cap": number, "close": signal-date close}}. Returns {isin: record} and the model portfolio's entries.
@@ -485,8 +521,8 @@ def run_pipeline(card, reg, params, population, held=(), cash=None, max_position
       3. ranking        rank_detail over the scoring population (evaluation_semantics.ranking)
       4. gates          evaluate(): failed / excluded / unknown_blocked / unrankable / candidate, and confidence
       5. size checks    at model size (target_value from the card's sizing): a failure is size_check_failed
-      6. capacity       construct(): held positions first, then rank order, while a slot and cash remain;
-                        a candidate not taken is no_capacity
+      6. capacity       construct(): held positions first, then construction.capacity_order (rank or earliest_signal),
+                        while a slot and cash remain; a candidate not taken is no_capacity
       7. quantities     through the card, with the model's hard_cap_value = min(notional_capital x
                         max_position_pct, the cash construct allotted), so the worst permitted fill never
                         overdraws the model's cash
@@ -495,6 +531,7 @@ def run_pipeline(card, reg, params, population, held=(), cash=None, max_position
     """
     e = Engine(card, reg, params)
     p = e.params
+    resolved_max_positions = _resolve_max_positions(card, max_positions)
     universe = {i: s for i, s in population.items()
                 if s["market_eligible"] and s["sector"] not in card["universe"]["exclude_sectors"]}
     out = {i: {"status": "not_in_universe"} for i in population if i not in universe}
@@ -524,9 +561,10 @@ def run_pipeline(card, reg, params, population, held=(), cash=None, max_position
             rec.update(status="size_check_failed", size_checks=checks)
             continue
         rec.update(target_value=target_value, publishable=r["publishable"])
-        candidates.append({"isin": i, "rank": rec["rank"], "market_cap": s["market_cap"], "target_value": target_value,
-                           "runtime": runtime})
-    taken, _ = construct(candidates, set(held), max_positions, D(str(cash)))
+        candidates.append({"isin": i, "rank": rec["rank"], "signal_at": s.get("signal_at"),
+                           "market_cap": s["market_cap"], "target_value": target_value, "runtime": runtime})
+    taken, _ = construct(candidates, set(held), resolved_max_positions, D(str(cash)),
+                         capacity_order=card["construction"]["capacity_order"])
     by = {c["isin"]: c for c in candidates}
     for c in candidates:
         out[c["isin"]]["status"] = "no_capacity"

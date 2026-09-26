@@ -869,6 +869,48 @@ def lint(card, reg, schema, status="experimental"):
 
 
 # ------------------------------------------------------------------ lifecycle status (M17 is the only authority)
+EVIDENCE_FILES = {
+    "linter_report_sha256": "linter_report_path",
+    "golden_case_report_sha256": "golden_case_report_path",
+    "validation_report_sha256": "validation_report_path",
+}
+
+
+def evidence_file_errors(rec, lifecycle_dir):
+    """Verify every hash-bearing lifecycle evidence reference against the exact file on disk."""
+    out = []
+    base = os.path.realpath(lifecycle_dir)
+    ev = rec.get("evidence", {})
+    for sha_key, path_key in EVIDENCE_FILES.items():
+        if sha_key not in ev:
+            continue
+        rel = ev.get(path_key)
+        if not rel:
+            out.append(f"lifecycle/{rec.get('_file', '?')}: {sha_key} has no {path_key}")
+            continue
+        if os.path.isabs(rel):
+            out.append(f"lifecycle/{rec.get('_file', '?')}: {path_key} must be relative to the lifecycle directory")
+            continue
+        path = os.path.realpath(os.path.join(base, *str(rel).replace('\\', '/').split('/')))
+        try:
+            if os.path.commonpath([base, path]) != base:
+                out.append(f"lifecycle/{rec.get('_file', '?')}: {path_key} escapes the lifecycle directory")
+                continue
+        except ValueError:
+            out.append(f"lifecycle/{rec.get('_file', '?')}: {path_key} is outside the lifecycle directory")
+            continue
+        if not os.path.isfile(path):
+            out.append(f"lifecycle/{rec.get('_file', '?')}: evidence file {rel!r} is missing")
+            continue
+        try:
+            got = sha256_file(path)
+        except OSError as exc:
+            out.append(f"lifecycle/{rec.get('_file', '?')}: evidence file {rel!r} is unreadable: {exc}")
+            continue
+        if got != ev[sha_key]:
+            out.append(f"lifecycle/{rec.get('_file', '?')}: evidence file {rel!r} sha256 {got} does not match recorded {ev[sha_key]}")
+    return out
+
 def load_transitions(lifecycle_dir):
     """Every transition record, validated against its schema. Returns (records, errors)."""
     tdir = os.path.join(lifecycle_dir, "transitions")
@@ -884,7 +926,12 @@ def load_transitions(lifecycle_dir):
         if e:
             errs += e
             continue
-        recs.append({**rec, "_file": f})
+        bound = {**rec, "_file": f}
+        file_errs = evidence_file_errors(bound, lifecycle_dir)
+        if file_errs:
+            errs += file_errs
+            continue
+        recs.append(bound)
     return recs, errs
 
 
@@ -906,36 +953,35 @@ def decided_instant(rec):
 
 
 def lifecycle_status(code, card_sha, records, now=None):
-    """(status, record file, problems) from the latest record for this card hash; (None, None, problems) if
-    unregistered. Records are ordered by the instant they were decided; the chain must be unambiguous (no two
-    records at one instant), in file order, not in the future, and each record starts where the previous ended."""
+    """Resolve status in transition-ledger order and require strictly increasing decision instants.
+
+    File/ledger order is authoritative for the chain. Timestamps validate chronology; they never reorder history.
+    """
     now = now or dt.datetime.now(dt.timezone.utc)
     problems, chain = [], []
     for r in records:
         if r["strategy_code"] != code or r["card_sha256"] != card_sha:
             continue
         try:
-            chain.append((decided_instant(r), r))
+            t = decided_instant(r)
         except ValueError as e:
             problems.append(str(e))
-    for t, r in chain:
+            continue
         if t > now + FUTURE_TOLERANCE:
             problems.append(f"lifecycle/{r['_file']}: decided_at {r['decided_at']} is in the future")
-    chain.sort(key=lambda x: x[0])
+        chain.append((t, r))
     for (t1, r1), (t2, r2) in zip(chain, chain[1:]):
-        if t1 == t2:
-            problems.append(f"lifecycle/{r1['_file']} and {r2['_file']}: decided at the same instant; order is ambiguous")
-        elif r1["_file"] > r2["_file"]:
-            problems.append(f"lifecycle/{r2['_file']} is filed before {r1['_file']} but decided after it")
-    chain = [r for _, r in chain]
+        if t2 <= t1:
+            relation = "same instant as" if t2 == t1 else "earlier than"
+            problems.append(f"lifecycle/{r2['_file']}: decided_at {r2['decided_at']} is {relation} prior transition {r1['_file']} ({r1['decided_at']})")
     prev = "none"
-    for r in chain:
+    for _, r in chain:
         if r["from_status"] != prev:
             problems.append(f"lifecycle/{r['_file']}: from_status {r['from_status']} but the card was {prev}")
         prev = r["to_status"]
     if not chain:
         return None, None, problems
-    return chain[-1]["to_status"], chain[-1]["_file"], problems
+    return chain[-1][1]["to_status"], chain[-1][1]["_file"], problems
 
 
 def lint_paths(card_paths, registry_path, schema_path, lifecycle_dir=None):

@@ -54,6 +54,7 @@ def main():
            "card_sha256": sha, "from_status": "none", "to_status": "experimental", "decided_by": a.by, "decided_at": at,
            "reason": a.reason,
            "evidence": {"linter_report_sha256": hashlib.sha256(open(report, "rb").read()).hexdigest(),
+                        "linter_report_path": os.path.relpath(report, os.path.join(HERE, "lifecycle")).replace(os.sep, "/"),
                         "holdout_exposure_declaration": {"derived_from": a.derived_from, "sealed_results_seen": a.seen}}}
     path = os.path.join(HERE, "lifecycle", "transitions", f"{rec['transition_id']}.json")
     json.dump(rec, open(path, "w", encoding="utf-8", newline="\n"), indent=1)

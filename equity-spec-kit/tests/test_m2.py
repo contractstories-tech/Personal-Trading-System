@@ -149,7 +149,11 @@ def legacy_and_udiff_parse_to_identical_rows():
         f1, d1, r1 = parsers.parse_bhavcopy(parsers.read_bytes(F.legacy(e.f("l.csv"), D2)))
         f2, d2, r2 = parsers.parse_bhavcopy(parsers.read_bytes(F.udiff(e.f("u.csv"), D2)))
         assert (f1, f2) == ("nse_bhavcopy_legacy", "nse_bhavcopy_udiff") and d1 == d2 == D2
-        assert r1 == r2 and len(r1) == 3
+        assert len(r1) == len(r2) == 3
+        assert all(r["source_instrument_id"] is None for r in r1)
+        assert [r["source_instrument_id"] for r in r2] == ["1000", "1001", "1002"]
+        common = lambda r: {k: v for k, v in r.items() if k != "source_instrument_id"}
+        assert [common(r) for r in r1] == [common(r) for r in r2]
         assert r1[0]["traded_value"] == decimal.Decimal("1185000.0000")  # from the file, never close x volume
 
 
@@ -266,13 +270,17 @@ def same_file_twice_is_a_noop():
 
 
 @case
-def same_content_in_other_format_writes_no_version():
+def cross_format_reissue_preserves_source_identity_explicitly():
     with Env() as e:
         ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("a.csv"), D1), recv(D1))
-        n = len(e.wh.read("price_observation"))
         res = ingest.ingest_bhavcopy(e.wh, F.udiff(e.f("b.csv"), D1), recv(D2))
-        assert res["rows_unchanged"] == 3 and res["rows_changed"] == 0
-        assert len(e.wh.read("price_observation")) == n
+        # UDiFF introduces exchange source IDs the legacy file did not carry.  Treat it as a new complete
+        # source snapshot and withdraw the legacy identities rather than pretending the identities are equal.
+        assert res["rows_new"] == 3 and res["rows_changed"] == 0
+        assert len(e.wh.read("observation_tombstone", [D1.isoformat()])) == 3
+        got = resolve.source_prices_known_as_of(e.wh, D3, start=D1)
+        assert len([r for r in got if r["trade_date"] == D1]) == 3
+        assert {r["source_instrument_id"] for r in got if r["trade_date"] == D1} == {"1000", "1001", "1002"}
 
 
 @case
@@ -294,22 +302,28 @@ def correction_is_a_new_version_resolved_as_of():
 
 
 @case
-def reissue_missing_a_security_logs_conflict_and_keeps_prior():
+def reissue_missing_a_security_creates_point_in_time_tombstone():
     with Env() as e:
         load_days(e, [D1], deliver=False)
         rows = F.bars(D1)
         rows[0]["c"] = "118.00"
         res = ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("r.csv"), D1, rows[:2]), recv(D2))
         assert [c["isin"] for c in res["conflicts"]] == [C]
-        assert C in {x["isin"] for x in resolve.history_known_as_of(e.wh, D3)}
+        assert C in {x["isin"] for x in resolve.history_known_as_of(e.wh, D1)}  # before withdrawal was known
+        assert C not in {x["isin"] for x in resolve.history_known_as_of(e.wh, D3)}
+        tomb = e.wh.read("observation_tombstone", [D1.isoformat()])
+        assert len(tomb) == 1 and tomb[0]["isin"] == C and tomb[0]["reason"] == "absent_from_complete_reissue"
         assert len(e.wh.read("data_conflict")) == 1
 
 
-# ------------------------------------------------------------------ quality checks: nothing written on reject
+# ------------------------------------------------------------------ quality checks: parsed warehouse state is unchanged on reject
 def _unchanged(e, fn):
-    before = e.wh.snapshot()["snapshot_sha256"]
+    """A rejected source may add its durable raw receipt / parse evidence, but no parsed domain table may change."""
+    evidence = {"raw_file", "raw_parse_event"}
+    before = {t: e.wh.read(t) for t in store.TABLES if t not in evidence}
     fn()
-    assert e.wh.snapshot()["snapshot_sha256"] == before, "a rejected file changed the warehouse"
+    after = {t: e.wh.read(t) for t in store.TABLES if t not in evidence}
+    assert after == before, "a rejected file changed parsed warehouse data"
 
 
 @case
@@ -458,12 +472,16 @@ def canary_catches_real_row_read_early():
 
 
 # ------------------------------------------------------------------ warehouse
-def _state(wh):
-    """Everything a reader can observe, normalised (part names differ between warehouses)."""
+def _state(wh, include_raw_evidence=True):
+    """Reader-visible state, normalised; receipt transaction can be inspected separately from parsed state."""
     out = {}
     for t in store.TABLES:
+        if not include_raw_evidence and t in {"raw_file", "raw_parse_event"}:
+            continue
         rows = wh.read(t)
-        out[t] = sorted(repr(sorted((k, v) for k, v in r.items() if k not in ("logged_at",))) for r in rows)
+        # Event creation time and conflict logging time are nondeterministic bookkeeping, not semantic state.
+        out[t] = sorted(repr(sorted((k, v) for k, v in r.items() if k not in ("logged_at", "parsed_at")))
+                        for r in rows)
     return out
 
 
@@ -486,7 +504,10 @@ def crash_at_every_batch_boundary_is_all_or_nothing():
             raises(store.SimulatedCrash, ingest.ingest_bhavcopy, e.wh, corr, at_ist(D2, "09:00"), _crash_at=point)
             assert _lock_free(e.wh), point                       # a crash inside the writer releases the lock
             if point == "before_record":
-                assert _state(e.wh) == before, point            # nothing became visible
+                assert _state(e.wh, include_raw_evidence=False) == {
+                    k: v for k, v in before.items() if k not in {"raw_file", "raw_parse_event"}
+                }, point                                         # parsed transaction did not become visible
+                assert len(e.wh.read("raw_file")) == 2, point    # transaction 1 did: baseline + correction receipt
                 assert e.wh.orphans(), point                     # only unreferenced debris
                 res = ingest.ingest_bhavcopy(e.wh, corr, at_ist(D2, "09:00"))
                 assert not res["noop"] and res["rows_changed"] == 1, point
@@ -496,7 +517,15 @@ def crash_at_every_batch_boundary_is_all_or_nothing():
                     pass                                          # any writer rolls the batch forward
                 assert ingest.ingest_bhavcopy(e.wh, corr, at_ist(D2, "09:30"))["noop"], point
             e.wh.remove_orphans()
-            assert _state(e.wh) == after, point
+            # The parsed/parse-event transaction must equal an uninterrupted ingestion. A later retry may add
+            # a distinct raw receipt when its received_at differs; that is a truthful acquisition event, not
+            # partial parsed state.
+            got, want = _state(e.wh), after
+            assert {k: v for k, v in got.items() if k != "raw_file"} == {
+                k: v for k, v in want.items() if k != "raw_file"
+            }, point
+            expected_receipts = 2 if point == "before_record" else 3
+            assert len(e.wh.read("raw_file")) == expected_receipts, (point, e.wh.read("raw_file"))
             assert e.wh.orphans() == [], point
 
 
@@ -618,9 +647,89 @@ def writer_killed_while_holding_the_lock_leaves_no_stale_lock():
 
 
 @case
+def parser_rejection_keeps_a_durable_raw_receipt():
+    """r5.7 Fix 4: landing is transaction 1; parser rejection cannot erase the fact of receipt."""
+    with Env() as e:
+        p = e.f("unknown.csv")
+        payload = b"THIS,IS,NOT,A,KNOWN,EXCHANGE,FORMAT\n1,2,3,4,5,6,7\n"
+        open(p, "wb").write(payload)
+        err = raises(parsers.FormatError, ingest.ingest_bhavcopy, e.wh, p, recv(D1))
+        assert err
+        (raw,) = e.wh.read("raw_file")
+        assert raw["source_id"] == "nse_cm_bhavcopy"
+        assert raw["original_name"] == "unknown.csv"
+        assert raw["file_sha256"] == store.hashlib.sha256(payload).hexdigest()
+        assert raw["size_bytes"] == len(payload)
+        assert open(e.wh.raw_path(raw["landed_path"]), "rb").read() == payload
+        assert e.wh.read("price_observation") == []
+        (event,) = e.wh.read("raw_parse_event")
+        assert event["file_sha256"] == raw["file_sha256"] and event["status"] == "rejected"
+        assert "FormatError" in event["parse_error"] and event["trade_date"] is None
+        assert e.wh.verify_raw_integrity() == 1
+
+
+@case
+def raw_provenance_rules_distinguish_manual_and_automated_acquisition():
+    """r5.7 Fix 9: null provenance is legitimate only where the declared acquisition method permits it."""
+    with Env() as e:
+        src = F.legacy(e.f("manual.csv"), D1)
+        ingest.ingest_bhavcopy(e.wh, src, recv(D1), acquisition_method="manual_upload")
+        (raw,) = e.wh.read("raw_file")
+        assert raw["acquisition_method"] == "manual_upload"
+        assert raw["source_url"] is None and raw["retrieved_at"] is None
+
+    with Env() as e:
+        src = F.legacy(e.f("download.csv"), D1)
+        retrieved = at_ist(D2, "07:50")
+        received = at_ist(D2, "08:00")
+        ingest.ingest_bhavcopy(e.wh, src, received, acquisition_method="scheduled_download",
+                               source_url="https://example.invalid/download.csv", retrieved_at=retrieved)
+        (raw,) = e.wh.read("raw_file")
+        assert raw["acquisition_method"] == "scheduled_download"
+        assert raw["source_url"] == "https://example.invalid/download.csv" and raw["retrieved_at"] == retrieved
+
+    for method, url, retrieved in (("scheduled_download", None, at_ist(D2, "07:50")),
+                                   ("scheduled_download", "https://example.invalid/x", None),
+                                   ("api", None, None),
+                                   ("vendor_drop", None, None),
+                                   ("archive_import", None, None),
+                                   ("not_a_method", None, None)):
+        with Env() as e:
+            src = F.legacy(e.f("bad.csv"), D1)
+            raises(ingest.QualityError, ingest.ingest_bhavcopy, e.wh, src, recv(D1),
+                   acquisition_method=method, source_url=url, retrieved_at=retrieved)
+            assert e.wh.read("raw_file") == [], "invalid provenance must fail before landing/receipt"
+
+    with Env() as e:
+        src = F.legacy(e.f("future.csv"), D1)
+        raises(ingest.QualityError, ingest.ingest_bhavcopy, e.wh, src, at_ist(D2, "08:00"),
+               acquisition_method="scheduled_download", source_url="https://example.invalid/x",
+               retrieved_at=at_ist(D2, "08:01"))
+        assert e.wh.read("raw_file") == []
+
+
+@case
+def raw_integrity_verification_detects_forced_post_landing_tamper():
+    """r5.7 Fix 10: immutable permissions are defence in depth; evidence verification re-hashes the bytes."""
+    with Env() as e:
+        src = F.legacy(e.f("b.csv"), D1)
+        ingest.ingest_bhavcopy(e.wh, src, recv(D1))
+        (raw,) = e.wh.read("raw_file")
+        assert e.wh.verify_raw_integrity() == 1
+        e.wh.snapshot()  # an evidence freeze/snapshot must also verify raw blobs
+        landed = e.wh.raw_path(raw["landed_path"])
+        os.chmod(landed, 0o644)
+        with open(landed, "ab") as f:
+            f.write(b"forced-tamper")
+        ex = raises(store.IntegrityError, e.wh.verify_raw_integrity)
+        assert raw["file_sha256"][:12] in str(ex)
+        raises(store.IntegrityError, e.wh.snapshot)
+
+
+@case
 def raw_file_is_landed_byte_for_byte_and_parsed_from_the_landed_copy():
     """Review P1 (raw landing): every source file's exact bytes are kept, content-addressed and write-once,
-    and a raw_file row committed with the observations names them."""
+    and a raw_file receipt is committed before parsing/observations."""
     with Env() as e:
         src = F.legacy(e.f("cm16SEP2026bhav.csv"), D1)
         original = open(src, "rb").read()
@@ -629,6 +738,7 @@ def raw_file_is_landed_byte_for_byte_and_parsed_from_the_landed_copy():
                                retrieved_at=at)
         (raw,) = e.wh.read("raw_file")
         assert raw["original_name"] == "cm16SEP2026bhav.csv" and raw["retrieved_at"] == at
+        assert raw["acquisition_method"] == "manual_upload"
         assert raw["size_bytes"] == len(original) and raw["file_sha256"] == store.hashlib.sha256(original).hexdigest()
         landed = e.wh.raw_path(raw["landed_path"])
         assert raw["landed_path"] == f"_raw/nse_cm_bhavcopy/{raw['file_sha256']}.csv"
@@ -836,7 +946,8 @@ def duplicate_file_check_reads_only_its_own_date():
         e.wh.read = lambda t, k=None, s=None: (seen.append((t, k)), real(t, k, s))[1]
         assert ingest.ingest_bhavcopy(e.wh, F.legacy(e.f(f"b{D2}.csv"), D2), recv(D2))["noop"]
         e.wh.read = real
-        assert seen == [("ingestion_log", [D2.isoformat()])], seen
+        assert seen == [("raw_file", [recv(D2).astimezone(IST).date().isoformat()]),
+                        ("ingestion_log", [D2.isoformat()])], seen
 
 
 @case
@@ -869,6 +980,220 @@ def parquet_codec_never_falls_back_silently():
     except ImportError:
         raises(store.StoreError, store.Warehouse, tempfile.mkdtemp(), "parquet")
 
+
+
+# ------------------------------------------------------------------ r5.8 real-NSE-derived source/master semantics
+@case
+def udiff_same_isin_across_eq_and_bl_is_valid_and_eq_is_canonical():
+    with Env() as e:
+        rows = F.bars(D1)
+        san_eq = dict(rows[0], sid=19001, sym="SANOFI", ser="EQ", isin="INE058A01010")
+        san_bl = dict(san_eq, sid=19002, ser="BL", c="7000.00", h="7001.00", l="6999.00", o="7000.00",
+                      last="7000.00", pc="6995.00", val="700000.00")
+        rows = [san_eq, san_bl, dict(rows[1], sid=19003), dict(rows[2], sid=19004)]
+        res = ingest.ingest_bhavcopy(e.wh, F.udiff(e.f("u.csv"), D1, rows), recv(D1))
+        assert res["rows_new"] == 4 and res["quarantined"] == []
+        src = resolve.source_prices_known_as_of(e.wh, D1)
+        assert len(src) == 4 and len([r for r in src if r["isin"] == "INE058A01010"]) == 2
+        got = [r for r in resolve.history_known_as_of(e.wh, D1) if r["isin"] == "INE058A01010"]
+        assert len(got) == 1 and got[0]["series"] == "EQ" and got[0]["source_instrument_id"] == "19001"
+
+
+@case
+def real_20260924_shape_3637_source_rows_are_preserved_and_bl_is_only_noncanonical():
+    """Real-file acceptance shape from 24-Sep-2026: 3,637 source rows including two EQ+BL ISIN pairs."""
+    with Env() as e:
+        base = F.bars(D1)[0]
+        rows = []
+        for n in range(3637):
+            isin = f"INE{n:08d}X"
+            rows.append(dict(base, sid=100000+n, sym=f"S{n}", ser="EQ", isin=isin,
+                             vol=100+n, val=f"{(100+n)*100:.2f}", trades=1+n))
+        # Two legitimate block-deal observations reuse the economic-security ISIN but have different source tokens.
+        rows[1].update(isin=rows[0]["isin"], sym=rows[0]["sym"], ser="BL")
+        rows[3].update(isin=rows[2]["isin"], sym=rows[2]["sym"], ser="BL")
+        res = ingest.ingest_bhavcopy(e.wh, F.udiff(e.f("u.csv"), D1, rows), recv(D1))
+        assert res["rows_new"] == 3637 and len(res["quarantined"]) == 0
+        src = resolve.source_prices_known_as_of(e.wh, D1)
+        canonical = resolve.history_known_as_of(e.wh, D1)
+        assert len(src) == 3637 and len(canonical) == 3635
+        assert e.wh.verify_raw_integrity() == 1
+
+
+@case
+def exact_duplicate_source_observation_is_still_rejected():
+    with Env() as e:
+        rows = F.bars(D1)
+        a = dict(rows[0], sid=5000)
+        # Same exchange token twice is a true duplicate; both rows quarantine and exceed the file threshold.
+        raises(ingest.QualityError, ingest.ingest_bhavcopy, e.wh,
+               F.udiff(e.f("dupe.csv"), D1, [a, dict(a), dict(rows[1], sid=5001), dict(rows[2], sid=5002)]), recv(D1))
+
+
+@case
+def mii_master_classifies_from_exchange_fields_not_names_or_isin_prefixes():
+    with Env() as e:
+        rows = [
+            dict(sid=1, sym="20MICRONS", isin="INE144J01027", type=0, ser="EQ"),
+            dict(sid=2, sym="GOLD360", isin="INF579M01BB5", type=4, ser="EQ"),
+            dict(sid=3, sym="JISLDVREQS", isin="IN9175A01010", type=0, ser="EQ"),
+            dict(sid=4, sym="011NSETEST", isin="DUMMYSAN005", type=0, ser="EQ"),
+            dict(sid=5, sym="DECGOLD", isin="INE945F01025", type=0, ser="EQ", name="DECCAN GOLD MINES LTD."),
+        ]
+        pth = F.security_master(e.f("NSE_CM_security_16092026.csv.gz"), D1, rows)
+        res = ingest.ingest_security_master(e.wh, pth, recv(D1), effective_session=D1,
+                                            effective_session_basis="validated_convention")
+        assert res["rows_new"] == 5 and e.wh.verify_raw_integrity() == 1
+        got = {r["symbol"]: r for r in e.wh.read("security_master_observation")}
+        assert got["20MICRONS"]["security_class"] == "company_equity"
+        assert got["GOLD360"]["security_class"] == "other"
+        assert got["JISLDVREQS"]["security_class"] == "company_equity"  # IN9 is not rejected by prefix
+        assert got["011NSETEST"]["is_dummy"] and got["011NSETEST"]["market_eligible"] is False
+        assert got["DECGOLD"]["security_class"] == "company_equity"  # name contains GOLD but is not a fund heuristic
+
+
+@case
+def master_effective_session_prevents_same_date_lookahead_and_unresolved_fails_closed():
+    old = [dict(sid=11033, sym="SANGINITA", isin="INE753W01010", type=0, ser="BE")]
+    new = [dict(sid=11033, sym="AGASTYAEN", isin="INE753W01010", type=0, ser="BE")]
+    with Env() as e:
+        ingest.ingest_security_master(e.wh, F.security_master(e.f("NSE_CM_security_16092026.csv.gz"), D1, old),
+                                      recv(D1), effective_session=D1, effective_session_basis="exchange_notice")
+        ingest.ingest_security_master(e.wh, F.security_master(e.f("NSE_CM_security_17092026.csv.gz"), D2, new),
+                                      recv(D2), effective_session=D3, effective_session_basis="exchange_notice")
+        assert resolve.security_master_state_as_of(e.wh, D2)["11033"]["row"]["symbol"] == "SANGINITA"
+        assert resolve.security_master_state_as_of(e.wh, D3)["11033"]["row"]["symbol"] == "AGASTYAEN"
+    with Env() as e:
+        ingest.ingest_security_master(e.wh, F.security_master(e.f("NSE_CM_security_16092026.csv.gz"), D1, old),
+                                      recv(D1), effective_session=D1, effective_session_basis="exchange_notice")
+        ingest.ingest_security_master(e.wh, F.security_master(e.f("NSE_CM_security_17092026.csv.gz"), D2, new),
+                                      recv(D2))
+        assert resolve.security_master_state_as_of(e.wh, D2)["11033"]["state"] == "master_state_unresolved"
+
+
+@case
+def explicit_no_trade_requires_resolved_eligible_master_and_complete_bhavcopy():
+    with Env() as e:
+        bh = [dict(F.bars(D2)[0], sid=1000), dict(F.bars(D2)[1], sid=1001)]
+        ingest.ingest_bhavcopy(e.wh, F.udiff(e.f("u.csv"), D2, bh), recv(D2))
+        master = [
+            dict(sid=1000, sym=bh[0]["sym"], isin=bh[0]["isin"], type=0, ser="EQ"),
+            dict(sid=1001, sym=bh[1]["sym"], isin=bh[1]["isin"], type=0, ser="EQ"),
+            dict(sid=2000, sym="ASSAMENT", isin="INE165G01010", type=0, ser="EQ"),
+            dict(sid=3000, sym="GOLD360", isin="INF579M01BB5", type=4, ser="EQ"),
+        ]
+        ingest.ingest_security_master(e.wh, F.security_master(e.f("NSE_CM_security_16092026.csv.gz"), D1, master),
+                                      recv(D1), effective_session=D2, effective_session_basis="validated_convention")
+        states = {r["source_instrument_id"]: r for r in resolve.resolve_session_states(e.wh, D2)}
+        assert states["1000"]["trade_state"] == "traded"
+        assert states["2000"]["trade_state"] == "no_trade" and states["2000"]["canonical_price"] is None
+        assert states["3000"]["trade_state"] == "not_in_target_universe"
+        assert not [r for r in e.wh.read("price_observation", [D2.isoformat()]) if r.get("source_instrument_id") == "2000"]
+
+
+@case
+def unresolved_or_unknown_master_semantics_never_create_no_trade():
+    with Env() as e:
+        bh = [dict(F.bars(D2)[0], sid=1000)]
+        ingest.ingest_bhavcopy(e.wh, F.udiff(e.f("u.csv"), D2, bh), recv(D2))
+        rows = [dict(sid=2000, sym="X", isin="INE123A01010", type=0, ser="EQ", status=99)]
+        ingest.ingest_security_master(e.wh, F.security_master(e.f("NSE_CM_security_16092026.csv.gz"), D1, rows),
+                                      recv(D1), effective_session=D2, effective_session_basis="validated_convention")
+        state = {r["source_instrument_id"]: r for r in resolve.resolve_session_states(e.wh, D2)}["2000"]
+        assert state["trade_state"] == "master_state_unresolved"
+        assert state["master_row"]["status_code_known"] is False and state["master_row"]["market_eligible"] is None
+
+
+@case
+def current_mii_header_is_exact_and_schema_drift_fails_loudly():
+    import gzip
+    with Env() as e:
+        good = F.security_master(e.f("NSE_CM_security_16092026.csv.gz"), D1,
+                                 [dict(sid=1, sym="AAA", isin="INE000A01011")])
+        fmt, day, rows = parsers.parse_security_master(parsers.read_bytes(good), os.path.basename(good))
+        assert fmt == "nse_cm_mii_security" and day == D1 and len(rows) == 1
+        text = parsers.read_bytes(good).decode("utf-8").replace("FinInstrmId,", "TokenRenamed,", 1)
+        bad = e.f("NSE_CM_security_16092026_bad.csv.gz")
+        with gzip.open(bad, "wb") as f:
+            f.write(text.encode())
+        # Use the valid expected filename when calling parser so the failure is the header, not filename parsing.
+        raises(parsers.FormatError, parsers.parse_security_master, gzip.decompress(open(bad, "rb").read()),
+               "NSE_CM_security_16092026.csv.gz")
+
+
+
+@case
+def mto_header_count_filename_date_and_percentage_are_enforced():
+    with Env() as e:
+        good = F.mto(e.f("MTO_16092026.DAT"), D1)
+        fmt, day, rows = parsers.parse_mto(parsers.read_bytes(good), os.path.basename(good))
+        assert fmt == "nse_mto_delivery" and day == D1 and len(rows) == 3
+        assert rows[0]["delivery_pct_reported"] == decimal.Decimal("50.0000")
+        text = open(good, encoding="utf-8").read()
+        bad_count = text.replace(",0000003\n", ",0000004\n", 1)
+        raises(parsers.FormatError, parsers.parse_mto, bad_count.encode(), "MTO_16092026.DAT")
+        raises(parsers.FormatError, parsers.parse_mto, text.encode(), "MTO_17092026.DAT")
+
+
+@case
+def mto_percentage_mismatch_is_logged_without_overwriting_quantities():
+    with Env() as e:
+        ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("b.csv"), D1), recv(D1))
+        p = F.mto(e.f("MTO_16092026.DAT"), D1)
+        text = open(p, encoding="utf-8").read().replace(",5000,50.00\n", ",5000,49.00\n", 1)
+        open(p, "w", encoding="utf-8", newline="\n").write(text)
+        res = ingest.ingest_delivery(e.wh, p, recv(D1))
+        assert "delivery_pct_mismatch" in [c["kind"] for c in res["conflicts"]]
+        row = [r for r in e.wh.read("delivery_observation") if r["isin"] == A][0]
+        assert row["delivery_qty"] == 5000 and row["delivery_pct_reported"] == decimal.Decimal("49.0000")
+
+
+@case
+def full_bhav_delivery_is_independent_crosscheck_and_preserves_missing_delivery():
+    with Env() as e:
+        ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("b.csv"), D1), recv(D1))
+        p = F.full_bhav_delivery(e.f("sec_bhavdata_full_16092026.csv"), D1, missing_isins={B},
+                                 pct_overrides={A: "49.00"})
+        res = ingest.ingest_delivery_crosscheck(e.wh, p, recv(D1))
+        assert res["rows_new"] == 3 and "delivery_pct_mismatch" in [c["kind"] for c in res["conflicts"]]
+        got = {r["isin"]: r for r in e.wh.read("delivery_crosscheck_observation")}
+        assert got[A]["delivery_available"] is True and got[A]["delivery_qty"] == 5000
+        assert got[B]["delivery_available"] is False and got[B]["delivery_qty"] is None
+        assert not e.wh.partitions("delivery_observation")  # validation reference can never become the primary feed
+
+
+@case
+def security_master_retains_price_range_fields_without_interpreting_band_state():
+    import gzip, csv, io
+    with Env() as e:
+        from eos.m2.parsers import MII_SECURITY_COLS
+        rec = {c: "" for c in MII_SECURITY_COLS}
+        rec.update({"FinInstrmId": "1", "TckrSymb": "AAA", "SctySrs": "EQ", "FinInstrmNm": "AAA LTD",
+                    "ISIN": A, "NewBrdLotQty": "1", "SctyTpFlg": "0", "SctyStsNrmlMkt": "6",
+                    "ElgbltyNrmlMkt": "1", "DelFlg": "N", "PricRg": "90.00-110.00", "PricRgTp": "1",
+                    "MaxPric": "110.00", "MinPric": "90.00", "TickSz": "0.05"})
+        buf = io.StringIO(newline="")
+        w = csv.DictWriter(buf, fieldnames=MII_SECURITY_COLS, lineterminator="\n"); w.writeheader(); w.writerow(rec)
+        p = e.f("NSE_CM_security_16092026.csv.gz")
+        with gzip.open(p, "wb") as f: f.write(buf.getvalue().encode())
+        ingest.ingest_security_master(e.wh, p, recv(D1))
+        row = e.wh.read("security_master_observation")[0]
+        assert row["price_range_text"] == "90.00-110.00"
+        assert row["max_price"] == decimal.Decimal("110.0000") and row["tick_size"] == decimal.Decimal("0.0500")
+        assert row["effective_session"] is None  # range evidence does not silently become a band-close decision
+
+
+@case
+def price_band_reference_capture_is_receipted_but_never_promoted_to_coverage():
+    with Env() as e:
+        p = e.f("sec_list_16092026.csv")
+        open(p, "wb").write(b"SYMBOL,SERIES,BAND\nAAAIND,EQ,20\n")
+        res = ingest.capture_unparsed_reference(e.wh, "nse_cm_price_band", p, recv(D1))
+        assert res["status"] == "captured_unparsed" and e.wh.verify_raw_integrity() == 1
+        events = e.wh.read("raw_parse_event")
+        assert len(events) == 1 and events[0]["status"] == "captured_unparsed"
+        assert not e.wh.partitions("source_coverage")
+        raises(ingest.QualityError, ingest.capture_unparsed_reference, e.wh, "unknown", p, recv(D1))
 
 # ------------------------------------------------------------------ platform primitives (r5.6, Windows defects)
 class _WindowsOs:
