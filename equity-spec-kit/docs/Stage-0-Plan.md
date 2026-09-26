@@ -1,6 +1,6 @@
 # Stage 0 Plan — Data Reality
 
-*Release r5.9 · 25 September 2026 · living plan; status per slice is kept in START-HERE.md*
+*Release r5.10 · 26 September 2026 · living plan; status per slice is kept in START-HERE.md*
 
 Stage 0 proves the data exists, can be parsed, and can be made point-in-time honestly. It closes on Document 02 §17's acceptance list and nothing less. Every verification item there ends as a confirmed fact or a documented limitation.
 
@@ -49,7 +49,7 @@ Parts are immutable. The manifest is the only list of what exists. Readers never
 
 | Slice | Scope | Done when |
 | --- | --- | --- |
-| **S1 — M2 prices** (r5.3, hardened through r5.9) | Legacy + UDiFF prices, MTO delivery, raw/provenance/integrity controls, source identity, multi-series observations, point-in-time corrections/tombstones, source/canonical price views and explicit no-trade states | ✅ on synthetic/real-derived goldens. r5.7 is native-Windows/Parquet certified. r5.9 build: 66 M2 cases × POSIX/Windows-sim JSONL = 132/132, plus 3/3 source-catalogue/acquisition checks; native-Windows/Parquet and genuine delivery/price-band file acceptance still required. |
+| **S1 — M2 prices** (r5.3, hardened through r5.10) | Legacy + UDiFF prices, MTO delivery, raw/provenance/integrity controls, source identity, multi-series observations, point-in-time corrections/tombstones, source/canonical price views and explicit no-trade states | ✅ on synthetic/real-derived goldens. r5.7 is native-Windows/Parquet certified. r5.9 build: 66 M2 cases × POSIX/Windows-sim JSONL = 132/132, plus 3/3 source-catalogue/acquisition checks; native-Windows/Parquet and genuine delivery/price-band file acceptance still required. |
 | **S1b — current MII reference + real files** | r5.8 pulled the daily MII reference slice forward. r5.9 hardens MTO, adds `sec_bhavdata_full` validation evidence, explicit source catalogue/downloader and coverage report, and starts immutable price-band capture without assigning unproven band semantics. Continue with actual multi-date files, archive depth and publication-time readings | 24-Sep real-file behaviour is represented by goldens; actual r5.8 24-Sep re-ingest preserves 3,637 source rows; multi-date UDiFF/MII sample clean; `--require-parquet` passes; effective-session limitations documented rather than guessed |
 | S2 — M1 long-run security lineage and corporate actions | Trading calendar with `session_type`; permanent `security_lineage` across ISIN changes/symbol reuse; corporate actions; share counts; adjusted/total-return series. The narrow daily MII reference ingest is no longer deferred to S2. | Continuous series across a split with an ISIN change, a bonus, a rights issue and a demerger, stub valued |
 | S3 — XBRL prototype | Same three securities in 2015, 2019 and 2024 filings; duration normalisation; restatements | Doc 02 §17 XBRL items pass; depth of free XBRL history measured |
@@ -65,7 +65,7 @@ Download from NSE's website (nseindia.com → All Reports → Equities, choosing
 | --- | --- | --- | --- |
 | 1 | CM bhavcopy, **old format** (`cmDDMONYYYYbhav.csv`) | The last three trading days before NSE switched format in early July 2024 | Legacy parser, back-to-back days |
 | 2 | CM bhavcopy, **new format** (`BhavCopy_NSE_CM_…_YYYYMMDD_…csv`) | The first three trading days after the switch, and three recent days (e.g. 16–18 Sep 2026) | UDiFF parser, both ends of its history |
-| 3 | Both formats for **one same date**, if NSE ever published both | Any overlap date | Proves the two parsers agree on real data |
+| 3 | Both formats for **one same date**, if NSE ever published both | Any overlap date | Proves the two parsers agree on real data. Since r5.10 they are also one observation: re-ingesting the other format must report every row unchanged |
 | 4 | CM MII Security File (`NSE_CM_security_DDMMYYYY.csv.gz`, **NSE Listed securities**) | Each recent UDiFF date selected in 2, plus dates immediately around at least two known symbol/listing/status transitions | Source-token reconciliation, company-equity classification and master effective-session evidence |
 | 5 | Security-wise delivery (`MTO_DDMMYYYY.DAT`) | Every date in 1 and 2 | Delivery parser and symbol-to-ISIN/source mapping |
 | 6 | Price-band file (`sec_list` or its current name), plus any band-hitters report | The same dates | Settles S0.7 |
@@ -78,6 +78,12 @@ Expect about 30–35 small files. The objective is representative semantics, not
 ## 6. Batch 2 (later, for S2)
 
 Bhavcopies around, and the exchange announcements for, one each of: a split, a bonus, a rights issue with traded entitlements (2020 or later), and a demerger with a special pre-open session. The actual events are chosen at S2 from the corporate-action archive, not from memory.
+
+## 6a. Facts r5.10 needs from real files
+
+- **Reissue semantics.** When NSE reissues a bhavcopy, MTO or full-bhav file for a date, is the reissue a complete snapshot? Until one real reissue shows it, `reissue_semantics` stays `unverified`: an omitted row is logged and kept, never withdrawn.
+- **Format cut-over date.** `eos/m2/catalog.py` takes 8 July 2024 as the first UDiFF-only bhavcopy session (`UDIFF_ONLY_FROM`, unverified). It only chooses which URL the downloader tries; confirm it against the archive.
+- **MTO header count.** The type-10 declared row count follows the documented layout; the first real MTO confirms or corrects it (a wrong assumption fails loudly, never silently).
 
 ## 7. Decisions this plan asks of Harsh
 

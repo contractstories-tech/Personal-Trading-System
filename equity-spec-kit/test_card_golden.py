@@ -22,6 +22,32 @@ REG = load_yaml(os.path.join(HERE, "registry.yaml"))
 CARDS = {c: load_yaml(os.path.join(HERE, "strategies", f"{c}.yaml")) for c in ("ltqv_v1", "mom_v1")}
 
 
+def variants(cards):
+    """r5.10: card variants that exercise engine branches the shipped cards never use (engine mutation showed them
+    unpinned). Each is derived from the cards under test, so a planted edit to a base card flows into its variants,
+    and each must pass the linter: they are shapes a real card may take."""
+    import json
+    from speclint import closure_sha256, lint
+    schema = json.load(open(os.path.join(HERE, "schemas", "card.schema.json"), encoding="utf-8"))
+    out = {}
+    v = copy.deepcopy(cards["ltqv_v1"])
+    v["gates"].append({"code": "G10", "expr": "quality_composite >= 0", "unknown_blocks": True})
+    out["ltqv_composite_gate"] = v
+    v = copy.deepcopy(cards["ltqv_v1"])
+    v["gates"].append({"code": "G10", "expr": "roce_stability >= 0.5", "unknown_blocks": False})
+    out["ltqv_waivable_gate"] = v
+    for name in ("ltqv_composite_gate", "ltqv_waivable_gate"):
+        out[name]["proposed_execution_rule"]["tranches"][0]["recheck_gates"].append("G10")
+    v = copy.deepcopy(cards["ltqv_v1"])
+    v["ranking"]["expr"] = "0.5 * value_composite + 0.5 * z(market_cap)"
+    out["ltqv_value_and_z"] = v
+    for name, v in out.items():
+        v["registry"]["closure_sha256"] = closure_sha256(v, REG)
+        errs = lint(v, REG, schema, "experimental")
+        assert not errs, f"variant {name} must be a valid card: {errs[:2]}"
+    return out
+
+
 def feats(d):
     return {k: (v if isinstance(v, dict) else {"state": "known", "value": v}) for k, v in (d or {}).items()}
 
@@ -30,11 +56,16 @@ def engine(card_code, cards, params=None):
     return E.Engine(cards[card_code], REG, params)
 
 
+def _card(code, cards):
+    return cards[code] if code in cards else variants(cards)[code]
+
+
 def cases(cards):
+    allc = dict(cards, **variants(cards))
     for c in G["gates"]:
-        e = engine(c["card"], cards, c.get("params"))
-        g = next(x for x in cards[c["card"]]["gates"] if x["code"] == c["gate"])
-        yield c["id"], e.gate(g, feats(c["features"])), c["expect"]
+        e = engine(c["card"], allc, c.get("params"))
+        g = next(x for x in allc[c["card"]]["gates"] if x["code"] == c["gate"])
+        yield c["id"], e.gate(g, feats(c["features"]), c.get("composites")), c["expect"]
     for c in G["exits"]:
         e = engine(c["card"], cards)
         x = dict(next(x for x in cards[c["card"]]["exit_rules"] if x["code"] == c["exit"]), **(c.get("override") or {}))
@@ -84,12 +115,15 @@ def cases(cards):
         order = sorted((i for i in ranks if ranks[i] is not None), key=lambda i: -ranks[i])
         yield c["id"], order[:3] + [ranks["SNONE"]], c["expect_top3"] + [None]
     for c in G["ranking_states"]:
-        e = engine(c["card"], cards)
-        detail = e.rank_detail(ranking_population(e, c["n"], c.get("overrides")))
+        e = engine(c["card"], allc)
+        detail = e.rank_detail(ranking_population(e, c["n"], c.get("overrides"), c.get("constant")))
+        if "expect_rank" in c:
+            yield c["id"], {i: float(detail[i]["rank"]) for i in c["expect_rank"]}, c["expect_rank"]
+            continue
         if "expect_equal_rank" in c:
             name = c["expect_equal_rank"][0]
             twin = {k: {**v, "state": "known"} for k, v in c["overrides"][name].items()}
-            twin_detail = e.rank_detail(ranking_population(e, c["n"], {name: twin}))
+            twin_detail = e.rank_detail(ranking_population(e, c["n"], {name: twin}, c.get("constant")))
             yield c["id"], detail[name]["rank"], twin_detail[name]["rank"]
             continue
         got = {i: (None if detail[i]["rank"] is None else "ranked") for i in c["expect"]}
@@ -97,14 +131,25 @@ def cases(cards):
         want = dict(c["expect"], **{f"{i} reason": r for i, r in c.get("reason", {}).items()})
         yield c["id"], got, want
     for c in G["evaluate"]:
-        e = engine(c["card"], cards, c.get("params"))
+        e = engine(c["card"], allc, c.get("params"))
         r = e.evaluate(feats(c["features"]), rank=c["rank"])
         yield c["id"], {"candidate": r["candidate"], "status": r["status"]}, c["expect"]
+    for c in G["api"]:
+        card = None
+        if "card_edit" in c:
+            card = copy.deepcopy(cards[c["card"]])
+            for g in card["gates"]:
+                g["expr"] = c["card_edit"].get(g["code"], g["expr"])
+        e = E.load(c["card"], card=card) if card is not None else E.load(c["card"])
+        g = next(x for x in e.card["gates"] if x["code"] == c["gate"])
+        yield c["id"], e.gate(g, feats(c["features"])), c["expect"]
 
 
-def ranking_population(e, n, overrides=None):
-    """Names S01..Sn; every ranking input of Si is i (known), then per-name state overrides."""
-    pop = {f"S{i:02d}": {f: {"state": "known", "value": i} for f in e.ranking_inputs()} for i in range(1, n + 1)}
+def ranking_population(e, n, overrides=None, constant=None):
+    """Names S01..Sn; every ranking input of Si is i (known) unless `constant` fixes it for every name; then
+    per-name state overrides."""
+    pop = {f"S{i:02d}": {f: {"state": "known", "value": (constant or {}).get(f, i)} for f in e.ranking_inputs()}
+           for i in range(1, n + 1)}
     for name, fs in (overrides or {}).items():
         pop[name].update(fs)
     return pop

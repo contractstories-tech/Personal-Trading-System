@@ -404,3 +404,12 @@ equivalent_mutants:
   line: 'r2 = lambda x: round(x + 1e-12, 2)'
   count: 1
   reason: 'rounding precision of a reported value: round(x, n) -> round(x, n+1) moves it by less than the goldens'' tolerance'
+- module: reference_engine
+  function: num
+  kind: bool
+  line: 'if x is None or isinstance(x, bool):'
+  count: 1
+  reason: >-
+    r5.10 review of the first real engine campaign. With `and`, a bool is converted to Decimal 1 or 0, which compares
+    equal to True/False and has the same truthiness, so every expression using it decides identically; None never
+    reaches num() because a non-known input resolves (FAIL/EXCLUDED/UNKNOWN) before any expression is evaluated.

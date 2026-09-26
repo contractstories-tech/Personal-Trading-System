@@ -10,14 +10,17 @@ import datetime as dt
 import os
 import sys
 
-from eos.store import Warehouse
+from eos.store import StoreError, Warehouse
 from eos.m2.catalog import SOURCES, coverage_matrix, coverage_summary
 
 
-def days(a, b):
+def days(a, b, include_weekends=False):
+    """Weekdays by default (r5.10: r5.9 reported every Saturday and Sunday as 'missing'). The trading calendar is
+    not built yet (Stage 0 slice S2), so an exchange holiday on a weekday still shows as missing; the report says so."""
     d = a
     while d <= b:
-        yield d
+        if include_weekends or d.weekday() < 5:
+            yield d
         d += dt.timedelta(days=1)
 
 
@@ -28,11 +31,15 @@ def main(argv=None):
     ap.add_argument("end", type=dt.date.fromisoformat)
     ap.add_argument("--codec", choices=("jsonl", "parquet"), default="parquet")
     ap.add_argument("--source", action="append", choices=sorted(SOURCES))
+    ap.add_argument("--include-weekends", action="store_true")
     ns = ap.parse_args(argv)
     if ns.end < ns.start:
         ap.error("end must not be before start")
-    wh = Warehouse(os.path.abspath(ns.warehouse), codec_name=ns.codec)
-    rows = coverage_matrix(wh, list(days(ns.start, ns.end)), ns.source)
+    try:
+        wh = Warehouse(os.path.abspath(ns.warehouse), codec_name=ns.codec, create=False)   # read-only: never creates
+    except StoreError as e:
+        ap.error(str(e))
+    rows = coverage_matrix(wh, list(days(ns.start, ns.end, ns.include_weekends)), ns.source)
     print("trade_date  source                         status                  rows  sha256")
     for r in rows:
         print(f"{r['trade_date']}  {r['source_id']:<30} {r['status']:<23} "
@@ -40,6 +47,8 @@ def main(argv=None):
     s = coverage_summary(rows)
     share = "-" if s["complete_share"] is None else f"{s['complete_share']:.1%}"
     print(f"\ncoverage cells: {s['cells']}; parsed-complete share: {share}")
+    print("note: weekdays only unless --include-weekends; exchange holidays still appear as 'missing' until the "
+          "trading calendar (S2) exists")
     print("by status:", ", ".join(f"{k}={v}" for k, v in s["by_status"].items()) or "none")
     return 0
 

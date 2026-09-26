@@ -1,6 +1,6 @@
-# Core Platform Architecture — Document 01 r11
+# Core Platform Architecture — Document 01 r12
 
-*Release r5.9 · 25 September 2026 · current state only; revision history is in the Issue Log*
+*Release r5.10 · 26 September 2026 · current state only; revision history is in the Issue Log*
 
 ## 1. Purpose, boundary and invariants
 
@@ -30,7 +30,7 @@ The platform continuously evaluates Indian listed equities across every active s
 | `reference_engine.py`, `reference_features.py`, `reference_sim.py` | Executable meaning of cards, features and simulation | Fixed by the golden files; production must match |
 | Document 03 | Explanation of the strategies; card sections **generated** from the YAML | Never authoritative over the YAML; parity-checked |
 | `schemas/*.json` | Closed shapes for cards, run manifests, portfolio policy, lifecycle transitions, holdout ledger | Machine form |
-| Document 04 r7 | Validation, simulation, costs, tax, golden cases, promotion statistics | Governs how backtests are run and judged |
+| Document 04 r8 | Validation, simulation, costs, tax, golden cases, promotion statistics | Governs how backtests are run and judged |
 | Document 05 *(before M12)* | AI evidence schema, threat model, model governance | Gate before any AI component |
 | Document 06 *(before dashboard)* | Presentation semantics | — |
 | Document 07 *(phased — §17)* | DDL, migrations, CI, deployment, operations, non-execution enforcement | Each control is due at the phase §17 names |
@@ -182,7 +182,7 @@ A card must satisfy `schemas/card.schema.json` (v6), which is **closed**: any fi
 
 - Each card's `construction` sets its maximum positions and capacity order. A numeric `max_positions` is part of the strategy hypothesis: runtime orchestration may omit it or supply the same value, but a conflicting external value is an error. `OPEN` still requires the runtime value supplied by the pre-registered experiment.
 - Existing positions are never displaced.
-- New claims fill free slots according to the card's declared `capacity_order`: **rank order** for `rank_and_gate`, or the actual timezone-aware `signal_at` instant for `earliest_signal` / `gate_only`. Equal signal instants break on ISIN, making the result deterministic. A gate-only candidate is never given an artificial rank.
+- New claims fill free slots according to the card's declared `capacity_order`: **rank order** for `rank_and_gate`, or the actual timezone-aware `signal_at` instant for `earliest_signal` / `gate_only`. Equal signal instants break on **larger market cap, then ISIN**, the same rule as scarce capacity everywhere else. r5.7–r5.9 broke them on ISIN alone, and because every signal of an end-of-day run shares one instant, capacity was in effect alphabetical. A signal time without a UTC offset is refused. A gate-only candidate is never given an artificial rank. The model commits at most `notional_capital × max_position_pct` to one name, both in quantity and in the cash it reserves, whatever the card's sizing formula says (r5.10).
 - For rank capacity, only ranked candidates reach construction: an unrankable security is not a candidate (§7), and `construct` refuses one. Ranks within the tie tolerance break on higher market cap, then ISIN.
 - Each claim is sized at `min(target_value, spendable cash)`. Its model `hard_cap_value` is `min(notional_capital × max_position_pct, the cash allotted)`, so even the worst permitted fill never overdraws the model's cash. Residual cash stays uninvested.
 - `reference_engine.construct` and `run_pipeline` fix this.
@@ -329,6 +329,8 @@ M11 diffs documents deterministically before M12 sees them. M12 returns structur
 
 **r5.8 real-data gate (inherited).** Before broad historical ingestion, the price/security-reference slice must preserve all legitimate source observations, derive canonical regular-market prices without using BL/IQ/RL as substitutes, keep unknown master effective state fail-closed, distinguish no-trade from quarantine/source absence, and pass a modest multi-date UDiFF/MII sample. The MII filename/report date is never itself proof of effective session.
 
+**r5.10 integrity gate.** One identity per observation in every file format, (ISIN, series), so a correction delivered in the other format is a later version and is never back-dated. A withdrawal (tombstone) needs proven complete-snapshot reissue semantics and a same-format file. Every landed file ends with a recorded outcome, and MTO and full-bhav delivery are compared. Acquisition refuses HTML pages, wrong formats, off-NSE hosts and back-dated live captures, and never overwrites. The mutation campaign actually runs every engine mutant: a mutant that cannot be built is an infrastructure error, never a kill.
+
 **r5.9 market-data completion gate.** The MTO feed is the primary delivery observation; its declared date/count and reported percentage are checked without rewriting source values. `sec_bhavdata_full` is independent cross-check evidence only. Acquisition is source-catalogued and bytes-only until ingestion; coverage is explicit per date/source. Price-band files may be captured prospectively but cannot affect strategy state until their historical semantics are validated. No downloader or coverage tool bypasses raw landing, provenance, hash verification or the source policy.
 
 | Stage | Build | Gate before continuing |
@@ -345,7 +347,7 @@ M11 diffs documents deterministically before M12 sees them. M12 returns structur
 
 | Before… | Controls |
 | --- | --- |
-| **Trusting any warehouse data** | Batch-atomic parsed ingestion and crash recovery, a single writer lock, source-identity validation, codec-independent schema validation, row quarantine; per-platform durable replace; write-once raw landing with pre-parse receipt; provenance and raw-blob SHA verification; UDiFF multi-series preservation; versioned MII master state with explicit effective-session semantics; and point-in-time tombstones for complete-file withdrawals. r5.7's fresh native Windows 11 / Python 3.12.10 / Parquet acceptance ended `ALL PASSED` on 25 September 2026. r5.8 must repeat that clean native-Windows `--require-parquet` gate before its warehouse data is certified. |
+| **Trusting any warehouse data** | Batch-atomic parsed ingestion and crash recovery, a single writer lock, source-identity validation, codec-independent schema validation, row quarantine; per-platform durable replace; write-once raw landing with pre-parse receipt; provenance and raw-blob SHA verification; UDiFF multi-series preservation; versioned MII master state with explicit effective-session semantics; and point-in-time tombstones only for proven complete-snapshot, same-format reissues; one observation identity (ISIN, series) across legacy and UDiFF (r5.10). r5.7's fresh native Windows 11 / Python 3.12.10 / Parquet acceptance ended `ALL PASSED` on 25 September 2026. r5.8 must repeat that clean native-Windows `--require-parquet` gate before its warehouse data is certified. |
 | **Live capture begins** (the scheduled downloader) | `live_capture_start` set in the source policy, so no later file can be back-dated |
 | **Closing Stage 0** | Document 02 corrections from real files. Special-dividend semantics settled. The security-identity table populated from real ISIN changes |
 | **The first calibration or backtest run** | Append-only trial log and lineage holdout enforcement, executable rather than prose. Brinson–Fachler with cash defined, with golden cases (drawdown, rolling-window share and the promotion statistic exist from r5.5). A semantic run-manifest validator deriving each run's full artefact and feature closure. A parent/child identity for multi-date simulations. Every card sizing and construction parameter set pre-registered and runtime-bound. `mutation_check.py` green across simulation, feature **and engine** references, with zero unexplained survivors and zero infrastructure errors. |

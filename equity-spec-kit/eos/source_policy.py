@@ -16,6 +16,8 @@ def load(path=None, registry=None):
     for sid, s in p["sources"].items():
         if s["domain"] not in reg["cutoff_policy"]:
             raise PolicyError(f"source {sid}: unknown domain {s['domain']}")
+        if s.get("reissue_semantics", "unverified") not in ("unverified", "complete_snapshot"):
+            raise PolicyError(f"source {sid}: reissue_semantics must be 'unverified' or 'complete_snapshot'")
         a = s.get("availability")
         if a is None:
             raise PolicyError(f"source {sid}: no availability rule")

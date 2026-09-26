@@ -440,7 +440,9 @@ def construct(candidates, held, max_positions, cash, tol=1e-9, capacity_order="r
 
     ``rank`` requires every candidate to carry a rank and preserves the existing score / market-cap / ISIN tie
     break. ``earliest_signal`` requires every candidate to carry ``signal_at`` and orders by the actual aware
-    instant, breaking exact ties by ISIN. Existing positions are never displaced. Returns (taken, not_taken).
+    instant, then larger market cap, then ISIN - the platform's one scarce-capacity rule (Doc 01 s9). r5.7-r5.9
+    broke equal instants on ISIN alone; for an EOD card every signal of a run shares one instant, so capacity
+    was in effect alphabetical. Existing positions are never displaced. Returns (taken, not_taken).
     """
     if capacity_order == "rank":
         unrankable = sorted(c["isin"] for c in candidates if c.get("rank") is None)
@@ -452,7 +454,8 @@ def construct(candidates, held, max_positions, cash, tol=1e-9, capacity_order="r
         missing = sorted(c["isin"] for c in candidates if c.get("signal_at") is None)
         if missing:
             raise ValueError(f"earliest_signal capacity needs signal_at for candidates: {missing}")
-        order = [c["isin"] for c in sorted(candidates, key=lambda c: (_signal_instant(c["signal_at"]), c["isin"]))]
+        order = [c["isin"] for c in sorted(candidates, key=lambda c: (_signal_instant(c["signal_at"]),
+                                                                    -c["market_cap"], c["isin"]))]
     else:
         raise ValueError(f"unsupported capacity_order {capacity_order!r}")
     by = {c["isin"]: c for c in candidates}
@@ -468,6 +471,11 @@ def construct(candidates, held, max_positions, cash, tol=1e-9, capacity_order="r
         else:
             rest.append(i)
     return taken, rest
+
+
+def _model_target(sized_value, max_position_value):
+    """What the model commits to one name: the card's sizing, never above its maximum position (r5.10)."""
+    return min(sized_value, max_position_value)
 
 
 def _resolve_max_positions(card, supplied):
@@ -520,7 +528,8 @@ def run_pipeline(card, reg, params, population, held=(), cash=None, max_position
                         (out of candidates, still scored)
       3. ranking        rank_detail over the scoring population (evaluation_semantics.ranking)
       4. gates          evaluate(): failed / excluded / unknown_blocked / unrankable / candidate, and confidence
-      5. size checks    at model size (target_value from the card's sizing): a failure is size_check_failed
+      5. size checks    at model size (the card's sizing, capped at notional_capital x max_position_pct): a failure
+                        is size_check_failed
       6. capacity       construct(): held positions first, then construction.capacity_order (rank or earliest_signal),
                         while a slot and cash remain; a candidate not taken is no_capacity
       7. quantities     through the card, with the model's hard_cap_value = min(notional_capital x
@@ -555,7 +564,10 @@ def run_pipeline(card, reg, params, population, held=(), cash=None, max_position
         if "atr_pct_20" in s["features"]:
             runtime["atr_pct_at_signal"] = num(s["features"]["atr_pct_20"]["value"])
         env = Env(s["features"], runtime=runtime)
-        target_value = e.ev(parse(card["sizing"]["formula"]), env)
+        # r5.10: the model never commits more than its maximum position to one name, whatever the card's sizing
+        # formula says. r5.9 capped the QUANTITY (engine invariant) but reserved the uncapped target as cash, so a
+        # card whose formula omitted the max-position term left cash idle and starved later candidates.
+        target_value = _model_target(e.ev(parse(card["sizing"]["formula"]), env), runtime["hard_cap_value"])
         checks = e.size_checks(s["features"], target_value / D(10) ** 7)
         if any(v != "PASS" for v in checks.values()):
             rec.update(status="size_check_failed", size_checks=checks)

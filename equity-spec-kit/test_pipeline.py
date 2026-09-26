@@ -42,6 +42,12 @@ _max1["registry"]["closure_sha256"] = closure_sha256(_max1, REG)
 assert lint(_max1, REG, SCHEMA, "experimental") == []
 CARDS["mom_max1"] = _max1
 
+_uncapped = copy.deepcopy(CARDS["mom_v1"])
+_uncapped["sizing"]["formula"] = "notional_capital * risk_to_stop_pct / (2.5 * atr_pct_at_signal)"
+_uncapped["registry"]["closure_sha256"] = closure_sha256(_uncapped, REG)
+assert lint(_uncapped, REG, SCHEMA, "experimental") == []
+CARDS["mom_uncapped_sizing"] = _uncapped
+
 
 def _value(spec, i):
     if isinstance(spec, list):
@@ -62,9 +68,12 @@ def population(case):
         fs = {f: {"state": "known", "value": _value(v, i)} for f, v in feats.items()}
         o = dict(over.get(name, {}))
         sector, eligible = o.pop("_sector", "it_services"), o.pop("_eligible", True)
+        mcap = o.pop("_market_cap", 1000 + i)
         fs.update({f: (dict(v) if isinstance(v, dict) else {"state": "known", "value": v}) for f, v in o.items()})
-        pop[name] = {"features": fs, "sector": sector, "market_eligible": eligible, "market_cap": 1000 + i,
-                     "close": case["close"], "signal_at": case.get("signal_at", {}).get(name)}
+        sig = case.get("signal_at", {})
+        sig = by_id[sig["from"]]["signal_at"] if "from" in sig else sig
+        pop[name] = {"features": fs, "sector": sector, "market_eligible": eligible, "market_cap": mcap,
+                     "close": case["close"], "signal_at": sig.get(name)}
     return pop
 
 
@@ -91,7 +100,8 @@ def run_case(case):
     groups = {}
     for i, r in out.items():
         groups.setdefault(r["status"], []).append(i)
-    got["status"] = {s: sorted(groups.get(s, [])) for s in want["status"]}
+    if "status" in want:
+        got["status"] = {s: sorted(groups.get(s, [])) for s in want["status"]}
     if "confidence" in want:
         got["confidence"] = {i: out[i].get("confidence") for i in want["confidence"]}
     return got, want
@@ -203,6 +213,19 @@ def _runtime_overrides_card(orig):
     return resolve
 
 
+def _r59_isin_only_tie(orig):
+    def construct(candidates, held, max_positions, cash, tol=1e-9, capacity_order="rank"):
+        if capacity_order != "earliest_signal":
+            return orig(candidates, held, max_positions, cash, tol, capacity_order=capacity_order)
+        flat = [dict(c, market_cap=0) for c in candidates]           # market cap ignored: ISIN decides equal instants
+        return orig(flat, held, max_positions, cash, tol, capacity_order=capacity_order)
+    return construct
+
+
+def _r59_uncapped_allotment(orig):
+    return lambda sized_value, max_position_value: sized_value       # r5.9 had no allotment cap
+
+
 DEFECTS = [
     ("r5.5: unrankable is a candidate and construct admits it after the ranked names", lambda: _both(
         _patch(E.Engine, "evaluate", _unrankable_as_rank_none), _patch(E, "construct", _r55_construct))),
@@ -215,6 +238,8 @@ DEFECTS = [
      lambda: _patch(E.Engine, "filter_membership", _unknown_filter_scored_out)),
     ("gate-only construction is forced back through rank ordering", lambda: _patch(E, "construct", _construct_forces_rank)),
     ("runtime max_positions silently overrides the card", lambda: _patch(E, "_resolve_max_positions", _runtime_overrides_card)),
+    ("r5.9: equal signal instants broken on ISIN alone", lambda: _patch(E, "construct", _r59_isin_only_tie)),
+    ("r5.9: model reserves the uncapped sizing target as cash", lambda: _patch(E, "_model_target", _r59_uncapped_allotment)),
 ]
 
 

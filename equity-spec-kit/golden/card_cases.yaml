@@ -23,11 +23,20 @@ gates:
   - {id: C11, card: mom_v1, gate: G6, doc: "F&O name, delivery 30% vs calibrated band 25% -> PASS", params: {band_fno: 0.25, band_cash: 0.40}, features: {delivery_pct_20d_avg: 0.30, is_fno_eligible: true}, expect: PASS}
   - {id: C11b, card: mom_v1, gate: G6, doc: "cash-only name, same 30% vs 40% band -> FAIL", params: {band_fno: 0.25, band_cash: 0.40}, features: {delivery_pct_20d_avg: 0.30, is_fno_eligible: false}, expect: FAIL}
 
+  # r5.10: engine mutation (now actually run) showed these boundaries were unpinned
+  - {id: C31, card: mom_v1, gate: G3, doc: "12-month return exactly 0 fails: G3 is strict (> 0)", features: {ret_12m_skip_1m: 0}, expect: FAIL}
+  - {id: C32, card: ltqv_v1, gate: G9, doc: "an out_of_domain(drop) input makes the gate UNKNOWN before any logic, even though another conjunct is FALSE (resolution order step 4; Kleene evaluation would say FAIL)",
+     features: {earnings_yield_ttm: -0.01, ey_median_5y: {state: out_of_domain, outcome: drop}, ey_vs_own_5y_median: 1.2}, expect: UNKNOWN}
+  - {id: C33, card: ltqv_composite_gate, gate: G10, doc: "variant card with a composite in a blocking gate (its inputs are the gate's inputs, all known): the composite value is compared", features: {roce_3y_avg: 0.2, roce_5y_trend: 0.01, cfo_pat_3y: 0.9, debt_equity: 0.3, interest_coverage: 8}, composites: {quality_composite: 0.5}, expect: PASS}
+  - {id: C33b, card: ltqv_composite_gate, gate: G10, doc: "inputs known but the composite has no value (e.g. too few contributors for a z-score): the gate is UNKNOWN", features: {roce_3y_avg: 0.2, roce_5y_trend: 0.01, cfo_pat_3y: 0.9, debt_equity: 0.3, interest_coverage: 8}, composites: {quality_composite: null}, expect: UNKNOWN}
+
 exits:
   - {id: C12, card: ltqv_v1, exit: X4, doc: "Kleene OR: pledge 30% TRUE OR auditor unknown -> TRUE -> FIRE (a strict reading would only review)", features: {promoter_pledge_pct: 0.30, auditor_resignation_5y: {state: missing}}, expect: FIRE}
   - {id: C12b, card: ltqv_v1, exit: X4, doc: "pledge 20% FALSE OR auditor unknown -> UNKNOWN -> REVIEW", features: {promoter_pledge_pct: 0.20, auditor_resignation_5y: {state: missing}}, expect: REVIEW}
   - {id: C12c, card: ltqv_v1, exit: X4, features: {promoter_pledge_pct: 0.20, auditor_resignation_5y: false}, expect: "NO"}
   - {id: C13, card: ltqv_v1, exit: X3, doc: "Kleene AND: valuation unknown AND trend 0.05 <= 0 FALSE -> FALSE -> NO (not a review)", features: {ey_vs_own_5y_median: {state: missing}, roce_5y_trend: 0.05}, expect: "NO"}
+  - {id: C13c, card: ltqv_v1, exit: X3, doc: "r5.10: Kleene AND of TRUE (0.50 <= 0.57) and UNKNOWN (trend missing) is UNKNOWN -> REVIEW, never FIRE", features: {ey_vs_own_5y_median: 0.50, roce_5y_trend: {state: missing}}, expect: REVIEW}
+  - {id: C13d, card: ltqv_v1, exit: X3, doc: "r5.10: an out_of_domain input with outcome DROP does not fire the exit (only outcome fail does): REVIEW", features: {ey_vs_own_5y_median: {state: out_of_domain, outcome: drop}, roce_5y_trend: -0.1}, expect: REVIEW}
   - {id: C14, card: ltqv_v1, exit: X1, doc: "the catastrophe case: equity turns negative, roce_hy_ttm out of domain (fail) on the latest half-year -> FIRE. In r5.4 persist was UNKNOWN and the model portfolio held",
      features: {roce_hy_ttm: {state: out_of_domain, outcome: fail}}, units: {half_year: [{roce_hy_ttm: 0.20}, {roce_hy_ttm: {state: out_of_domain, outcome: fail}}]}, expect: FIRE}
   - {id: C14b, card: ltqv_v1, exit: X1, doc: "same, but the exit declares on_out_of_domain: review", override: {on_out_of_domain: review},
@@ -56,6 +65,8 @@ confidence:
      conflicted: [adv_20d_cr], expect: [high, true]}
   - {id: C20f, card: ltqv_v1, doc: "three bands down: one missing penalised input, one conflicted penalised ranking input, one conflicted material ranking input",
      missing: [roce_stability], conflicted: [ev_ebitda_vs_sector, roce_5y_trend], expect: [insufficient, false]}
+  - {id: C20g, card: ltqv_v1, doc: "r5.10: four bands of drops still floor at insufficient (the band index is clamped, never out of range)",
+     missing: [roce_stability, positive_revenue_growth_years_5y, exceptional_frequency, ev_ebitda_vs_sector], expect: [insufficient, false]}
 
 stops:
   - {id: C21, card: mom_v1, doc: "G10's path through the CARD's own stop expressions (2.5 x ATR): same stops, exit on session 6",
@@ -64,6 +75,7 @@ stops:
                 {close: 106, atr_pct: 0.015}, {close: 105, atr_pct: 0.015}, {close: 101, atr_pct: 0.015}],
      expect: {stops_tested: [90.0, 90.0, 94.5, 101.75, 101.75, 101.75, 101.75], exit_session: 6}}
   - {id: C21b, card: mom_v1, doc: "close exactly at the stop does not exit", entry_fill: 100, atr_at_signal: 0.04, sessions: [{close: 90, atr_pct: 0.04}], expect: {stops_tested: [90.0], exit_session: null}}
+  - {id: C21c, card: mom_v1, doc: "r5.10: the reported stop is rounded to 4 dp half-even: 100 x (1 - 2.5 x 0.012345) = 96.91375 -> 96.9138", entry_fill: 100, atr_at_signal: 0.012345, sessions: [{close: 100, atr_pct: 0.012345}], expect: {stops_tested: [96.9138], exit_session: null}}
 
 quantities:
   - {id: C22, card: mom_v1, doc: "N = 1 crore, risk 0.5%, max 5%, ATR at signal 2%, close 100: target = min(1e7 x .005 / .05, 5 lakh) = 5 lakh; qty = min(5000, min(floor(500000/103) = 4854, floor(50000 / (103 x 2.5 x .02)) = 9708)) = 4854; risk at the stop 4854 x 103 x 0.05 = 24,998 <= 50,000",
@@ -93,6 +105,14 @@ construction:
      held: [], max_positions: 5, cash: 1000000,
      candidates: [{isin: INE0A, rank: 0.9, market_cap: 100, target_value: 200000}, {isin: INE0D, rank: null, market_cap: 9999, target_value: 200000}],
      expect: {error: "unrankable securities are not candidates: ['INE0D']"}}
+  - {id: C25d, doc: "r5.10: ranks 1.05e-9 apart are NOT a tie (tolerance 1e-9): the higher rank wins the one slot despite the smaller market cap",
+     held: [], max_positions: 1, cash: 1000000,
+     candidates: [{isin: INE0A, rank: 0.50000000105, market_cap: 100, target_value: 200000}, {isin: INE0B, rank: 0.5, market_cap: 900, target_value: 200000}],
+     expect: {taken: [[INE0A, 200000]], not_taken: [INE0B]}}
+  - {id: C25e, doc: "r5.10: ranks 0.95e-9 apart ARE a tie: the larger market cap wins",
+     held: [], max_positions: 1, cash: 1000000,
+     candidates: [{isin: INE0A, rank: 0.50000000095, market_cap: 100, target_value: 200000}, {isin: INE0B, rank: 0.5, market_cap: 900, target_value: 200000}],
+     expect: {taken: [[INE0B, 200000]], not_taken: [INE0A]}}
   - {id: C25b, doc: "cash runs out: the second claim is sized to the remaining 50,000", held: [], max_positions: 5, cash: 250000,
      candidates: [{isin: INE0A, rank: 0.9, market_cap: 100, target_value: 200000}, {isin: INE0B, rank: 0.8, market_cap: 100, target_value: 200000},
                   {isin: INE0C, rank: 0.7, market_cap: 100, target_value: 200000}],
@@ -131,6 +151,16 @@ ranking_states:
   - {id: C29e, card: ltqv_v1, doc: "two penalised consistency inputs missing: consistency composite below 2 of 3, unrankable",
      n: 32, overrides: {S07: {roce_stability: {state: missing}, exceptional_frequency: {state: missing}}}, expect: {S07: null},
      reason: {S07: "consistency_composite: 1 of 3 inputs, needs 2"}}
+  - {id: C29i, card: ltqv_v1, doc: "r5.10: two composites below their minimum: the reason names the FIRST in ranking order (value), not the last",
+     n: 32, overrides: {S07: {ev_ebitda_vs_sector: {state: missing}, earnings_yield_spread: {state: missing}, roce_stability: {state: missing}, positive_revenue_growth_years_5y: {state: missing}}},
+     expect: {S07: null}, reason: {S07: "value_composite: 1 of 3 inputs, needs 2"}}
+  - {id: C29j, card: mom_v1, doc: "r5.10: a z() term with zero cross-sectional deviation has no z-score for anyone: every name is unrankable, with that reason",
+     n: 32, constant: {vol_adj_mom_6m: 0.5}, expect: {S05: null, S20: null}, reason: {S20: "no z-score for vol_adj_mom_6m"}}
+  - {id: C29k, card: ltqv_value_and_z, doc: "r5.10: variant ranking 0.5 x value_composite + 0.5 x z(market_cap) with market cap constant: a name whose composite ALSO fails keeps the composite reason (the first cause), others report the z-score",
+     n: 32, constant: {market_cap: 5000}, overrides: {S07: {ev_ebitda_vs_sector: {state: missing}, earnings_yield_spread: {state: missing}}},
+     expect: {S07: null, S08: null}, reason: {S07: "value_composite: 1 of 3 inputs, needs 2", S08: "no z-score for market_cap"}}
+  - {id: C29h, card: ltqv_v1, doc: "r5.10: the composite is the MEAN of directional z-scores. With every input = i, z(20) = 3.5 / 9.200836 = 0.380400 after winsorising to [1.31, 31.69]; quality = 0.6z (debt/equity lower-better), value = z/3, consistency = z/3; rank = 0.5(0.6z) + 0.3(z/3) + 0.2(z/3) = 0.177520 (computed independently of reference_sim)",
+     n: 32, expect_rank: {S20: 0.177520}}
   - {id: C29f, card: ltqv_v1, doc: "ey_vs_own_5y_median out_of_domain with outcome drop is left out of value_composite like a penalised input (2 of 3 remain)",
      n: 32, overrides: {S07: {ey_vs_own_5y_median: {state: out_of_domain, outcome: drop}}}, expect: {S07: ranked}}
   - {id: C29g, card: ltqv_v1, doc: "debt_equity stale (material, exclude): unrankable whatever the other inputs",
@@ -147,3 +177,17 @@ evaluate:
                            rel_strength_6m_vs_nifty200_tri: 0.1, delivery_pct_20d_avg: 0.5, is_fno_eligible: true,
                            surveillance_stage: {state: known, value: none}},
      params: {band_fno: 0.25, band_cash: 0.45}, expect: {candidate: true, status: candidate}}
+  - {id: C30c, card: ltqv_waivable_gate, doc: "r5.10: variant with a waivable gate (G10 on the secondary roce_stability, unknown_blocks false): a FAIL on it still blocks candidacy - only UNKNOWN is waived",
+     rank: 0.3, features: &ltqv_pass {operating_history_years: 10, roce_3y_avg: 0.2, cfo_pat_3y: 0.9, interest_coverage: 8, debt_equity: 0.3,
+                                      promoter_pledge_pct: 0, auditor_resignation_5y: false, forensic_flag_count: 0, forensic_coverage_pct: 0.9,
+                                      surveillance_stage: {state: known, value: none}, earnings_yield_ttm: 0.05, ey_median_5y: 0.04,
+                                      ey_vs_own_5y_median: 1.25, roce_stability: 0.1},
+     expect: {candidate: false, status: failed}}
+  - {id: C30d, card: ltqv_waivable_gate, doc: "the same gate UNKNOWN (roce_stability missing, penalised) is waived: a candidate",
+     rank: 0.3, features: {<<: *ltqv_pass, roce_stability: {state: missing}}, expect: {candidate: true, status: candidate}}
+
+# r5.10: the engine's public loader (reference_engine.load) builds the same engine as the shipped card and registry
+api:
+  - {id: C34, card: mom_v1, gate: G1, doc: "load('mom_v1') reads strategies/mom_v1.yaml and registry.yaml: ADV 25 passes G1", features: {adv_20d_cr: 25}, expect: PASS}
+  - {id: C34b, card: mom_v1, gate: G1, doc: "load(code, card=...) evaluates the card it is given, not the file", card_edit: {G1: "adv_20d_cr >= 26"}, features: {adv_20d_cr: 25}, expect: FAIL}
+

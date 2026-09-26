@@ -61,6 +61,7 @@ cases:
         taken: [S26, S27, S28]
         no_capacity: [S05, S06, S07, S08, S09, S10, S11, S12, S13, S14, S15, S16, S17, S18, S19, S20, S21, S22, S23, S24, S25]
       confidence: {S28: medium, S27: high, S26: high}
+      tranche_1: {S28: null}
 
   - id: P2
     card: mom_v1
@@ -173,9 +174,10 @@ cases:
     card: mom_gate_only
     doc: >-
       A linter-valid gate-only variant has no ranking block and declares construction.capacity_order =
-      earliest_signal with max_positions = 2. All four names pass its filters and gates. Capacity therefore uses
-      the actual signal instant, not rank or population/alphabetical order: S02 (10:01) is first and S03/S04 tie
-      at 10:02, with the deterministic ISIN/name tie-break admitting S03. S01 signalled last at 10:03.
+      earliest_signal with max_positions = 2. All four names pass its filters and gates. Capacity uses the actual
+      signal instant, then larger market cap, then ISIN (Doc 01 s9): S02 (10:01 IST) is first; S03 (10:02 IST) and
+      S04 (04:32Z = 10:02 IST) tie on the instant, and S04's larger market cap (1004 vs 1003) admits it. r5.7-r5.9
+      broke the tie on ISIN alone and admitted S03. S01 signalled last at 10:03.
     params: {notional_capital: 10000000, risk_to_stop_pct: 0.005, max_position_pct: 0.05, band_fno: 0.25, band_cash: 0.45}
     names: 4
     close: 100
@@ -194,8 +196,31 @@ cases:
       S03: "2026-09-24T10:02:00+05:30"
       S04: "2026-09-24T04:32:00Z"
     expect:
+      entries: [[S02, 4854], [S04, 4854]]
+      published: [S02, S04]
+      status:
+        taken: [S02, S04]
+        no_capacity: [S01, S03]
+
+  - id: P5b
+    card: mom_gate_only
+    doc: >-
+      P5 with S03 and S04 at the same market cap: the tie falls through to ISIN, and S03's ISIN sorts first.
+    params: {notional_capital: 10000000, risk_to_stop_pct: 0.005, max_position_pct: 0.05, band_fno: 0.25, band_cash: 0.45}
+    names: 4
+    close: 100
+    cash: 1000000
+    max_positions: null
+    held: []
+    features: {from: P1}
+    overrides:
+      S01: {vol_adj_mom_12m: 0.80}
+      S02: {vol_adj_mom_12m: 0.80}
+      S03: {vol_adj_mom_12m: 0.80, _market_cap: 2000}
+      S04: {vol_adj_mom_12m: 0.80, _market_cap: 2000}
+    signal_at: {from: P5}
+    expect:
       entries: [[S02, 4854], [S03, 4854]]
-      published: [S02, S03]
       status:
         taken: [S02, S03]
         no_capacity: [S01, S04]
@@ -214,3 +239,62 @@ cases:
     features: {from: P1}
     overrides: {}
     expect_error: "max_positions mismatch: card declares 1, runtime supplied 3"
+
+  - id: P7
+    card: mom_gate_only
+    doc: >-
+      r5.10: earliest_signal capacity refuses a signal time without a UTC offset. A naive time names no instant, and
+      silently reading it as the machine's local time would reorder capacity by where the job ran.
+    params: {notional_capital: 10000000, risk_to_stop_pct: 0.005, max_position_pct: 0.05, band_fno: 0.25, band_cash: 0.45}
+    names: 2
+    close: 100
+    cash: 1000000
+    held: []
+    features: {from: P1}
+    overrides:
+      S01: {vol_adj_mom_12m: 0.80}
+      S02: {vol_adj_mom_12m: 0.80}
+    signal_at:
+      S01: "2026-09-24T10:01:00+05:30"
+      S02: "2026-09-24T10:02:00"
+    expect_error: "earliest_signal capacity requires an aware signal_at timestamp for every candidate"
+
+  - id: P8
+    card: mom_uncapped_sizing
+    doc: >-
+      r5.10: a linter-valid variant whose sizing formula omits the max-position term (target = 1e7 x 0.005 / (2.5 x
+      0.02) = 10 lakh). The model's maximum position (1e7 x 0.05 = 5 lakh) still binds, both for the quantity and for
+      the cash reserved, so the outcome is exactly P1's: S28 and S27 at 4854, S26 with the remaining 2 lakh at 1941.
+      r5.9 capped the quantity but reserved 10 lakh for S28, leaving 5 lakh idle and S26 out.
+    params: {notional_capital: 10000000, risk_to_stop_pct: 0.005, max_position_pct: 0.05, band_fno: 0.25, band_cash: 0.45}
+    names: 32
+    close: 100
+    cash: 1200000
+    max_positions: 3
+    held: []
+    features: {from: P1}
+    overrides: {from: P1}
+    expect:
+      entries: [[S28, 4854], [S27, 4854], [S26, 1941]]
+      tranche_1: {S28: null}
+
+  - id: P9
+    card: mom_v1
+    doc: >-
+      r5.10: the impact check at its boundary, in crore. Notional 12 crore: target = min(1.2e8 x 0.005 / 0.05, 1.2e8 x
+      0.05) = 60 lakh = 0.6 crore. Impact = 0.0010 + 0.02 x sqrt(0.6 / 30) = 0.0010 + 0.02 x 0.141421 = 0.003828 >
+      0.0035, so S1 fails for every candidate (S2 passes: 0.6 <= 3). A units slip (rupees to crore by 1e8, or 11^7)
+      would make S1 pass.
+    params: {notional_capital: 120000000, risk_to_stop_pct: 0.005, max_position_pct: 0.05, band_fno: 0.25, band_cash: 0.45}
+    names: 32
+    close: 100
+    cash: 120000000
+    max_positions: 3
+    held: []
+    features: {from: P1}
+    overrides: {from: P1}
+    expect:
+      entries: []
+      status:
+        size_check_failed: [S05, S06, S07, S08, S09, S10, S11, S12, S13, S14, S15, S16, S17, S18, S19, S20, S21, S22, S23, S24, S25, S26, S27, S28]
+

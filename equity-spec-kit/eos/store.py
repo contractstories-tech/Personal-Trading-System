@@ -269,12 +269,19 @@ class Batch:
 
 
 class Warehouse:
-    def __init__(self, root, codec_name="parquet"):
+    def __init__(self, root, codec_name="parquet", create=True):
+        """create=False opens an existing warehouse only (r5.10: a report given a mistyped path must fail, not
+        silently create an empty warehouse and report every source missing)."""
         self.root = root
         self.codec = codec(codec_name)
         self._held = 0          # re-entrancy depth, valid only for the owning thread
         self._owner = None
         self._lock_fd = None
+        if not create:
+            missing = [d for d in ("_batches", "_applied") if not os.path.isdir(os.path.join(root, d))]
+            if missing:
+                raise StoreError(f"{root} is not a warehouse (no {', '.join(missing)}); refusing to create one here")
+            return
         for d in ("", "_batches", "_applied"):
             os.makedirs(os.path.join(root, d), exist_ok=True)
 

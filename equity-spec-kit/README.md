@@ -1,4 +1,4 @@
-# Equity Opportunity System — spec kit, release r5.9
+# Equity Opportunity System — spec kit, release r5.10
 
 The controlling package: specifications, the machine registry, strategy cards and their lifecycle records, schemas, the executable references that fix what everything means, and the tools that check them.
 **Integrity:** every file is bound by SHA-256 in `MANIFEST.json`. Anything not matching it is a draft.
@@ -7,12 +7,12 @@ The controlling package: specifications, the machine registry, strategy cards an
 
 | Path | What it is |
 | --- | --- |
-| `docs/Overview-Spec-v5-9.md` | Product scope, principles, readiness gates |
-| `docs/Core-Platform-Architecture-Doc-01-r11.md` | Modules, flows, evaluation semantics, state machines, boundaries |
-| `docs/Data-Contract-Doc-02-r8.md` | Every table, field, source, timing rule and feature definition |
+| `docs/Overview-Spec-v5-10.md` | Product scope, principles, readiness gates |
+| `docs/Core-Platform-Architecture-Doc-01-r12.md` | Modules, flows, evaluation semantics, state machines, boundaries |
+| `docs/Data-Contract-Doc-02-r9.md` | Every table, field, source, timing rule and feature definition |
 | `docs/Strategy-Pack-Doc-03-r8.md` | Strategy explanations; card sections generated from the YAML |
-| `docs/Validation-Protocol-Doc-04-r7.md` | Simulation, costs, tax view, holdout, trials, promotion statistics, stress, acceptance |
-| `docs/Issue-Log-and-Traceability-r5-9.md` | Disposition of every review finding (§12: r5.4 audit; §13: r5.5 Windows review; §14: r5.7 post-audit corrections; §15: r5.8 real-NSE corrections; §16: r5.9 market-data completion) |
+| `docs/Validation-Protocol-Doc-04-r8.md` | Simulation, costs, tax view, holdout, trials, promotion statistics, stress, acceptance |
+| `docs/Issue-Log-and-Traceability-r5-10.md` | Disposition of every review finding (§12: r5.4 audit; §13: r5.5 Windows review; §14: r5.7 post-audit corrections; §15: r5.8 real-NSE corrections; §16: r5.9 market-data completion; §17: r5.10 integrity release and the open-findings register) |
 | `docs/Stage-0-Plan.md` | Stage 0 sources, layout, order of work, files to download |
 | `START-HERE.md` | Non-normative release status and handover note; controlling artefacts win on any conflict |
 | `registry.yaml` | 3.1.0: features, functions, enums, evaluation semantics, window conventions, session policy, scoring, identity, CA policy — every entry versioned |
@@ -79,20 +79,19 @@ python mutation_check.py                                      # fixture adequacy
 
 `python -m pytest -q` runs the same suites (except `mutation_check.py`). Keep the files byte-exact: unzip the kit as delivered, and if you keep it in git, keep `* -text` in `.gitattributes`. A line-ending conversion changes the hashes, and `make_manifest.py --verify` names it.
 
-**Counts at r5.9 build:**
+**Counts at r5.10:**
 
 - `test_speclint.py`: 119 cases, 2,004 malformed cards and no crash.
 - `speclint.py`: both cards compile as `experimental` per their lifecycle records.
 - `test_golden.py`: 146 golden cases; 42 of 42 planted defects caught.
 - `test_features.py`: 152 feature cases; 14 of 14 planted feature defects caught; every card-read feature covered.
-- `test_card_golden.py`: 68 card cases; 12 of 12 planted card edits caught.
-- `test_pipeline.py`: 6 end-to-end cases; 9 of 9 planted defects caught.
-- `tests/test_m2.py`: **66 cases** on every available codec and both platform paths. The build environment ran 132/132 on JSONL (66 × POSIX + Windows-sim); Parquet remains the native-Windows acceptance run.
-- r5.8 inherited real-derived M2 goldens include a 3,637-row UDiFF shape, legitimate EQ+BL same-ISIN observations, MII master classification, effective-session look-ahead protection, no-trade resolution, schema drift and reissue tombstones.
-- `tests/test_catalog.py`: 3/3 source-catalogue/acquisition/coverage checks pass.
-- `python -m pytest -q`: 19 passed.
-- `tests/test_mutation.py`: mutation infrastructure self-test passes.
-- `mutation_check.py`: 673 sites; 592 killed, 2 mutant timeouts, 79 reviewed equivalents, 0 unexplained survivors and 0 infrastructure errors.
+- `test_card_golden.py`: 86 card cases (including linter-valid card variants for engine branches the shipped cards never use); 12 of 12 planted card edits caught.
+- `test_pipeline.py`: 10 end-to-end cases; 11 of 11 planted defects caught (including the r5.9 tie-break and cash-reservation behaviours).
+- `tests/test_m2.py`: 73 cases × 2 codecs × 2 platform paths = 292 runs, including cross-format identity, reissue semantics, parse outcomes for quality rejections and the MTO/full-bhav comparison.
+- `tests/test_catalog.py`: 6 of 6 catalogue, acquisition-control and coverage-report checks.
+- `tests/test_mutation.py`: 3 harness checks. A crashed worker, and a mutant that cannot be built, are infrastructure errors; every mutant of every reference module builds.
+- `python -m pytest -q`: 21 passed.
+- `mutation_check.py`: 673 sites across `reference_sim.py`, `reference_features.py` and `reference_engine.py`; 591 killed, 2 timeouts, 80 reviewed equivalents, 0 unexplained survivors, 0 infrastructure errors. Engine: 83 of 84 killed, 1 reviewed equivalent. (Counts published for r5.7–r5.9 were wrong: no engine mutant actually ran; see Issue Log §17.)
 
 ## Certification
 
@@ -108,6 +107,18 @@ What has actually been run, and where. Nothing here is claimed beyond it.
 | **r5.7 clean-install Windows acceptance (25 September 2026)** | Fresh Windows 11 / Python 3.12.10 environment, installing only the declared requirements outside the manifest-bound package: `run_all.py --require-parquet` ended **ALL PASSED**. PyYAML 6.0.3, PyArrow 25.0.1, pytest 9.1.1 and `tzdata 2026.4` were installed from the declared files; `pip check` reported no broken requirements. |
 | **r5.8 build environment** | All non-Parquet contract suites and the expanded r5.8 M2/security-master regressions pass; the regular 673-site mutation campaign is clean. The build environment has no PyArrow/network installation path, so r5.8 itself still requires the same fresh native-Windows `run_all.py --require-parquet` acceptance before it is certified. |
 | **r5.9 build environment** | `run_all.py`: **ALL PASSED** on the available Linux environment; M2 132/132 on JSONL (66 cases × POSIX/Windows-sim), source catalogue 3/3, portability 4/4, mutation 673 sites with 0 unexplained survivors/0 infrastructure errors, pytest 19 passed. PyArrow is not installed here, so Parquet/native-Windows and genuine MTO/full-bhav/price-band/network acceptance remain external. |
+| **r5.10 (26 September 2026)** | `run_all.py --require-parquet --pytest`: ALL PASSED from a clean unzip on Linux under CPython 3.12.3 and 3.13.12 in fresh environments built only from `requirements-dev.txt` (PyYAML 6.0.3, pyarrow 25.0.1, pytest 9.1.1, tzdata 2026.4), and under CPython 3.11.15 with the same pins except tzdata, which that environment lacks. Windows paths exercised under emulation only; **native Windows/Parquet, real-file re-ingest and live NSE downloads are not yet run** (Issue Log §17, O-1 to O-3) |
+
+### r5.10 integrity scope
+
+r5.10 is an integrity release over r5.9 (Issue Log §17):
+- One observation identity, (ISIN, series), across legacy and UDiFF files, so no correction is back-dated.
+- Withdrawals only for proven complete-snapshot, same-format reissues.
+- A recorded outcome for every landed file.
+- MTO and full-bhav delivery compared.
+- Acquisition controls, and pre-2024 bhavcopy URLs.
+- Gate-only ties broken on market cap, and the model allotment capped at the maximum position.
+- A mutation harness that actually runs the engine's mutants, with the 22 survivors closed.
 
 ### r5.9 market-data completion scope
 

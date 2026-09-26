@@ -1,6 +1,6 @@
 # Source policy (Document 02 s2, s3). Versioned; every snapshot records the version it was built under.
 # Availability rules that were previously prose-only live here, and eos/source_policy.py enforces them.
-source_policy_version: 1.4.0
+source_policy_version: 1.5.0
 valid_from: "2000-01-01"
 
 # Backfill availability is set PER SOURCE (1.1.0; review B9): the bhavcopy and the delivery file are
@@ -9,15 +9,20 @@ valid_from: "2000-01-01"
 # a LATER version is never inferred - it is available when this system actually received it.
 # inferred_basis says whether the time is still an assumption (unverified) or has been measured from
 # live capture (measured). Every inferred time must fall strictly before the source domain's cutoff.
+# reissue_semantics (1.5.0): whether a later file for a date is a COMPLETE snapshot, so a row it omits was withdrawn.
+# 'unverified' until real reissues prove it: an omission then keeps the prior version and logs absent_in_reissue.
+# 'complete_snapshot' tombstones an omitted row, and only one that came from a file of the same format.
 sources:
   nse_cm_bhavcopy:
     domain: exchange_eod
+    reissue_semantics: unverified
     table: price_observation
     role: primary
     formats: [nse_bhavcopy_legacy, nse_bhavcopy_udiff]
     availability: {policy_lag_minutes: 0, inferred_published_time_ist: "22:30", inferred_basis: unverified}
   nse_cm_delivery:
     domain: exchange_eod
+    reissue_semantics: unverified
     table: delivery_observation
     role: primary
     formats: [nse_mto_delivery]
@@ -32,6 +37,7 @@ sources:
     availability: {policy_lag_minutes: 0, inferred_published_time_ist: "09:00", inferred_basis: unverified}
   nse_cm_full_bhav_delivery:
     domain: exchange_eod
+    reissue_semantics: unverified
     table: delivery_crosscheck_observation
     role: validation_reference
     formats: [nse_sec_bhavdata_full_delivery]

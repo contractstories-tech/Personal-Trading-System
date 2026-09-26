@@ -25,6 +25,7 @@ The parse/observation transaction is one warehouse batch, written under one writ
 coverage and the ingestion-log entry become visible together or not at all, and no second ingestion can
 allocate a version between this one's read and its commit.
 """
+import contextlib
 import datetime as dt
 import decimal
 import fractions
@@ -34,6 +35,7 @@ from .. import canary
 from ..source_policy import load as load_policy
 from ..timeutil import IST, at_ist
 from . import parsers
+from .identity import observation_key
 
 PRICE_FIELDS = ("symbol", "series", "open", "high", "low", "close", "prev_close", "volume", "traded_value", "num_trades")
 DELIVERY_FIELDS = ("symbol", "series", "delivery_qty", "traded_qty_reported", "delivery_pct_reported")
@@ -52,14 +54,7 @@ class KillSwitch(QualityError):
     """Row count collapsed versus the prior session; no parsed observations are written or published."""
 
 
-def _source_key(r):
-    """Stable identity of one exchange source observation within a session.
-
-    Current UDiFF/MII data carries FinInstrmId.  Legacy bhavcopy/MTO data does not, so the fallback is
-    intentionally series-aware: one ISIN may legitimately have EQ and BL observations on the same date.
-    """
-    sid = r.get("source_instrument_id")
-    return ("src", str(sid)) if sid not in (None, "") else ("legacy", r.get("isin"), r.get("series"))
+_source_key = observation_key      # (ISIN, series) in every format: see eos/m2/identity.py (r5.10)
 
 
 def _latest(rows):
@@ -112,6 +107,13 @@ def _neutral(table):
     return dict(delivery_qty=0, traded_qty_reported=1, delivery_pct_reported=parsers.D4 * 0)
 
 
+def _active_prices(wh, day):
+    """The day's currently active price observations: latest version per observation, withdrawn ones excluded
+    (r5.10: r5.9 mapped delivery rows onto tombstoned price rows)."""
+    _, latest = _latest_events(wh, "price_observation", day)
+    return {k: r for k, r in latest.items() if r.get("table_name") is None}
+
+
 def _latest_events(wh, table, trade_date):
     key = trade_date.isoformat()
     obs = wh.read(table, [key]) if key in wh.partitions(table) else []
@@ -127,13 +129,20 @@ def _latest_events(wh, table, trade_date):
     return obs, latest
 
 
-def _version(wh, table, trade_date, parsed, fields, meta, mode, received_at, published, now, pol, sha,
-             suppressed_absent_keys=None, tombstone_missing=True):
-    """Version source observations and explicit withdrawals.
+def _reissue_is_complete_snapshot(pol, source_id):
+    return pol["sources"][source_id].get("reissue_semantics", "unverified") == "complete_snapshot"
 
-    A complete reissue that omits a previously active source observation creates a tombstone.  A row
-    quarantined in the reissue is supplied in suppressed_absent_keys: it is neither accepted nor mis-labelled
-    as an exchange withdrawal.
+
+def _version(wh, table, trade_date, parsed, fields, meta, mode, received_at, published, now, pol, sha,
+             suppressed_absent_keys=None):
+    """Version observations and, where proven, explicit withdrawals.
+
+    A row absent from a later file is WITHDRAWN (tombstoned) only when the source policy declares that source's
+    reissues complete snapshots AND the absent row came from a file of the same format. Otherwise the prior version
+    is kept and an absent_in_reissue conflict is logged (r5.10: r5.8-r5.9 tombstoned on every absence, although no
+    real reissue has yet shown NSE reissues are complete, and a file in the other format - whose row set differs -
+    would have withdrawn every row it lacked). A row quarantined in the reissue is in suppressed_absent_keys: it is
+    neither accepted nor labelled a withdrawal.
     """
     existing, latest = _latest_events(wh, table, trade_date)
     suppressed_absent_keys = set(suppressed_absent_keys or ())
@@ -159,26 +168,37 @@ def _version(wh, table, trade_date, parsed, fields, meta, mode, received_at, pub
         new.append(row)
 
     seen = {_source_key(r) for r in parsed}
-    if tombstone_missing:
-        for k, prev in sorted(latest.items(), key=lambda kv: repr(kv[0])):
-            if k in seen or k in suppressed_absent_keys or prev.get("table_name") is not None:
-                continue
-            av = _availability(meta["source_id"], mode, False, trade_date, received_at, published, now, pol)
-            tombstones.append({
-                "table_name": table, "source_instrument_id": prev.get("source_instrument_id"),
-                "isin": prev.get("isin"), "series": prev.get("series"), "trade_date": trade_date,
-                "version_no": prev["version_no"] + 1, "source_id": meta["source_id"], "file_sha256": sha,
-                "received_at": received_at, "usable_from": av["usable_from"],
-                "availability_inferred": av["availability_inferred"], "supersedes_version": prev["version_no"],
-                "reason": "absent_from_complete_reissue", "domain": meta["domain"],
-            })
+    complete = _reissue_is_complete_snapshot(pol, meta["source_id"])
+    for k, prev in sorted(latest.items(), key=lambda kv: repr(kv[0])):
+        if k in seen or k in suppressed_absent_keys or prev.get("table_name") is not None:
+            continue
+        if not (complete and prev.get("source_format") == meta["source_format"]):
+            why = ("the source's reissue semantics are unverified" if not complete else
+                   f"it came from a {prev.get('source_format')} file, not {meta['source_format']}")
             conflicts.append({
                 "table_name": table, "source_instrument_id": prev.get("source_instrument_id"),
                 "isin": prev.get("isin"), "series": prev.get("series"), "trade_date": trade_date,
-                "kind": "withdrawn_in_reissue",
-                "detail": f"present at v{prev['version_no']}, absent from complete file {sha[:12]}; tombstoned",
+                "kind": "absent_in_reissue",
+                "detail": f"present at v{prev['version_no']}, absent from file {sha[:12]}; prior version kept because {why}",
                 "file_sha256": sha, "logged_at": received_at,
             })
+            continue
+        av = _availability(meta["source_id"], mode, False, trade_date, received_at, published, now, pol)
+        tombstones.append({
+            "table_name": table, "source_instrument_id": prev.get("source_instrument_id"),
+            "isin": prev.get("isin"), "series": prev.get("series"), "trade_date": trade_date,
+            "version_no": prev["version_no"] + 1, "source_id": meta["source_id"], "file_sha256": sha,
+            "received_at": received_at, "usable_from": av["usable_from"],
+            "availability_inferred": av["availability_inferred"], "supersedes_version": prev["version_no"],
+            "reason": "absent_from_complete_reissue", "domain": meta["domain"],
+        })
+        conflicts.append({
+            "table_name": table, "source_instrument_id": prev.get("source_instrument_id"),
+            "isin": prev.get("isin"), "series": prev.get("series"), "trade_date": trade_date,
+            "kind": "withdrawn_in_reissue",
+            "detail": f"present at v{prev['version_no']}, absent from complete file {sha[:12]}; tombstoned",
+            "file_sha256": sha, "logged_at": received_at,
+        })
 
     if not existing and new:
         new = canary.sentinels(table, trade_date, "exchange_eod", _neutral(table)) + new
@@ -225,11 +245,59 @@ def _land(wh, source_id, path, received_at, source_url, retrieved_at, acquisitio
     return sha, wh.raw_path(rel), raw
 
 
-def _rejected_parse_event(wh, raw, exc):
+def _rejected_parse_event(wh, raw, exc, fmt=None, day=None):
     row = {"source_id": raw["source_id"], "file_sha256": raw["file_sha256"], "received_at": raw["received_at"],
-           "parsed_at": dt.datetime.now(dt.timezone.utc), "status": "rejected", "source_format": None,
-           "trade_date": None, "parse_error": f"{type(exc).__name__}: {exc}"}
+           "parsed_at": dt.datetime.now(dt.timezone.utc), "status": "rejected", "source_format": fmt,
+           "trade_date": day, "parse_error": f"{type(exc).__name__}: {exc}"}
     wh.append("raw_parse_event", _receipt_key(raw["received_at"]), [row])
+
+
+def _active_rows(wh, table, day):
+    _, latest = _latest_events(wh, table, day)
+    return {k: r for k, r in latest.items() if r.get("table_name") is None}
+
+
+def _delivery_source_conflicts(wh, day, own_table, mapped, sha, received_at):
+    """Compare primary MTO delivery with the full-bhav cross-check for the same (ISIN, series) and session (r5.10).
+
+    Whichever file arrives second compares; values are exchange-reported integers, so any difference is logged.
+    Neither source is ever corrected from the other: the MTO row remains the primary delivery value."""
+    other = "delivery_crosscheck_observation" if own_table == "delivery_observation" else "delivery_observation"
+    theirs = _active_rows(wh, other, day)
+    out = []
+    for r in mapped:
+        o = theirs.get(_source_key(r))
+        if o is None:
+            continue
+        mto, xc = (r, o) if own_table == "delivery_observation" else (o, r)
+        base = {"table_name": own_table, "source_instrument_id": r.get("source_instrument_id"), "isin": r["isin"],
+                "series": r["series"], "trade_date": day, "file_sha256": sha, "logged_at": received_at}
+        if not xc.get("delivery_available", True):
+            out.append({**base, "kind": "delivery_availability_mismatch",
+                        "detail": f"MTO reports deliverable {mto['delivery_qty']}; full bhav reports delivery unavailable ('-')"})
+            continue
+        if mto["delivery_qty"] != xc["delivery_qty"]:
+            out.append({**base, "kind": "delivery_source_mismatch",
+                        "detail": f"MTO deliverable {mto['delivery_qty']} vs full bhav {xc['delivery_qty']}; MTO stays primary"})
+        if mto["traded_qty_reported"] != xc["traded_qty_reported"]:
+            out.append({**base, "kind": "delivery_traded_qty_mismatch",
+                        "detail": f"MTO traded {mto['traded_qty_reported']} vs full bhav {xc['traded_qty_reported']}"})
+    return out
+
+
+@contextlib.contextmanager
+def _parse_outcome(wh):
+    """Every landed file ends with a recorded outcome (r5.10). Parser failures already record `rejected`; this
+    records one for a file that parsed but failed a quality check (backfill guard, quarantine limit, kill switch,
+    expected date, unmapped day), which r5.7-r5.9 left as a receipt with no outcome - indistinguishable from a crash
+    between the receipt and the parse. The body sets ctx after parsing; the writer lock is still held here."""
+    ctx = {}
+    try:
+        yield ctx
+    except QualityError as exc:
+        if "raw" in ctx:
+            _rejected_parse_event(wh, ctx["raw"], exc, ctx.get("fmt"), ctx.get("day"))
+        raise
 
 
 def _parsed_event(raw, fmt, day):
@@ -288,13 +356,13 @@ def _enforce_quarantine_share(path, quarantined, total, pol):
 
 def ingest_bhavcopy(wh, path, received_at, mode="backfill", published=None, now=None, expect_date=None, policy=None,
                     source_url=None, retrieved_at=None, acquisition_method="manual_upload", _crash_at=None):
-    with wh.writer():
+    with wh.writer(), _parse_outcome(wh) as ctx:
         return _ingest_bhavcopy(wh, path, received_at, mode, published, now, expect_date, policy, source_url,
-                                retrieved_at, acquisition_method, _crash_at)
+                                retrieved_at, acquisition_method, _crash_at, ctx)
 
 
 def _ingest_bhavcopy(wh, path, received_at, mode, published, now, expect_date, policy, source_url, retrieved_at,
-                     acquisition_method, _crash_at):
+                     acquisition_method, _crash_at, ctx=None):
     pol = policy or load_policy()
     sha, landed, raw = _land(wh, "nse_cm_bhavcopy", path, received_at, source_url, retrieved_at, acquisition_method)
     try:
@@ -302,6 +370,8 @@ def _ingest_bhavcopy(wh, path, received_at, mode, published, now, expect_date, p
     except Exception as exc:
         _rejected_parse_event(wh, raw, exc)
         raise
+    if ctx is not None:
+        ctx.update(raw=raw, fmt=fmt, day=day)
     if _already(wh, sha, day, "nse_cm_bhavcopy"):
         return {"noop": True, "file_sha256": sha}
     if expect_date and day != expect_date:
@@ -313,10 +383,12 @@ def _ingest_bhavcopy(wh, path, received_at, mode, published, now, expect_date, p
     structural = [r["isin"] for r in rows if canary.is_canary(r["isin"])]
     if structural:
         raise QualityError(f"{path}: reserved canary prefix in source data: {structural[:5]}")
-    counts_by_key = {}
+    counts_by_key, counts_by_sid = {}, {}
     for r in rows:
         k = _source_key(r)
         counts_by_key[k] = counts_by_key.get(k, 0) + 1
+        if r.get("source_instrument_id") not in (None, ""):
+            counts_by_sid[r["source_instrument_id"]] = counts_by_sid.get(r["source_instrument_id"], 0) + 1
     quarantined, clean = [], []
     for r in rows:
         i = r["isin"]
@@ -324,7 +396,10 @@ def _ingest_bhavcopy(wh, path, received_at, mode, published, now, expect_date, p
         if len(i) != 12 or not i[:2].isalpha() or not i.isalnum():
             reason, detail = "malformed_isin", f"malformed ISIN {i!r}"
         elif counts_by_key[_source_key(r)] > 1:
-            reason, detail = "duplicate_source_observation", f"source identity {_source_key(r)!r} appears {counts_by_key[_source_key(r)]} times"
+            reason, detail = "duplicate_source_observation", f"{r['isin']} {r['series']} appears {counts_by_key[_source_key(r)]} times"
+        elif counts_by_sid.get(r.get("source_instrument_id"), 0) > 1:
+            reason, detail = "duplicate_source_observation", (f"FinInstrmId {r['source_instrument_id']} appears "
+                                                              f"{counts_by_sid[r['source_instrument_id']]} times")
         elif min(o, h, l, c) <= 0 or l > min(o, c) or h < max(o, c):
             reason, detail = "ohlc_invalid", f"OHLC ordering violated (O {o} H {h} L {l} C {c})"
         elif r["volume"] < 0 or r["traded_value"] < 0:
@@ -363,12 +438,13 @@ def _ingest_bhavcopy(wh, path, received_at, mode, published, now, expect_date, p
 
 def ingest_delivery(wh, path, received_at, mode="backfill", published=None, now=None, policy=None, source_url=None,
                     retrieved_at=None, acquisition_method="manual_upload", _crash_at=None):
-    with wh.writer():
+    with wh.writer(), _parse_outcome(wh) as ctx:
         return _ingest_delivery(wh, path, received_at, mode, published, now, policy, source_url, retrieved_at,
-                                acquisition_method, _crash_at)
+                                acquisition_method, _crash_at, ctx)
 
 
-def _ingest_delivery(wh, path, received_at, mode, published, now, policy, source_url, retrieved_at, acquisition_method, _crash_at):
+def _ingest_delivery(wh, path, received_at, mode, published, now, policy, source_url, retrieved_at, acquisition_method,
+                     _crash_at, ctx=None):
     pol = policy or load_policy()
     sha, landed, raw = _land(wh, "nse_cm_delivery", path, received_at, source_url, retrieved_at, acquisition_method)
     try:
@@ -376,12 +452,13 @@ def _ingest_delivery(wh, path, received_at, mode, published, now, policy, source
     except Exception as exc:
         _rejected_parse_event(wh, raw, exc)
         raise
+    if ctx is not None:
+        ctx.update(raw=raw, fmt=fmt, day=day)
     if _already(wh, sha, day, "nse_cm_delivery"):
         return {"noop": True, "file_sha256": sha}
     if mode == "backfill":
         _check_backfill_allowed(day, received_at, pol)
-    prices = _latest(wh.read("price_observation", [day.isoformat()])) if day.isoformat() in \
-        wh.partitions("price_observation") else {}
+    prices = _active_prices(wh, day)
     if not prices:
         raise QualityError(f"{path}: no bhavcopy ingested for {day}; delivery rows cannot be mapped to ISINs")
     by_sym = {(p["symbol"], p["series"]): p for p in prices.values()}
@@ -414,6 +491,7 @@ def _ingest_delivery(wh, path, received_at, mode, published, now, policy, source
                               "detail": f"delivery file traded {r['traded_qty_reported']} vs bhavcopy {vol}"})
         mapped.append({**r, "isin": p["isin"], "source_instrument_id": p.get("source_instrument_id")})
     _enforce_quarantine_share(path, quarantined, len(rows), pol)
+    conflicts += _delivery_source_conflicts(wh, day, "delivery_observation", mapped, sha, received_at)
     meta = {"source_id": "nse_cm_delivery", "source_format": fmt, "domain": "exchange_eod"}
     q_keys = {_source_key(q) for q in quarantined if q.get("isin")}
     new, tombstones, reissue, counts = _version(wh, "delivery_observation", day, mapped, DELIVERY_FIELDS, meta, mode,
@@ -430,7 +508,7 @@ def _ingest_delivery(wh, path, received_at, mode, published, now, policy, source
 def ingest_delivery_crosscheck(wh, path, received_at, mode="backfill", published=None, now=None, policy=None,
                                source_url=None, retrieved_at=None, acquisition_method="manual_upload", _crash_at=None):
     """Ingest `sec_bhavdata_full` delivery fields as independent evidence, never as the primary delivery feed."""
-    with wh.writer():
+    with wh.writer(), _parse_outcome(wh) as ctx:
         pol = policy or load_policy()
         source_id = "nse_cm_full_bhav_delivery"
         sha, landed, raw = _land(wh, source_id, path, received_at, source_url, retrieved_at, acquisition_method)
@@ -439,11 +517,12 @@ def ingest_delivery_crosscheck(wh, path, received_at, mode="backfill", published
         except Exception as exc:
             _rejected_parse_event(wh, raw, exc)
             raise
+        ctx.update(raw=raw, fmt=fmt, day=day)
         if _already(wh, sha, day, source_id):
             return {"noop": True, "file_sha256": sha}
         if mode == "backfill":
             _check_backfill_allowed(day, received_at, pol)
-        prices = _latest(wh.read("price_observation", [day.isoformat()])) if day.isoformat() in wh.partitions("price_observation") else {}
+        prices = _active_prices(wh, day)
         if not prices:
             raise QualityError(f"{path}: no bhavcopy ingested for {day}; full-bhav delivery rows cannot be mapped")
         by_sym = {(p["symbol"], p["series"]): p for p in prices.values()}
@@ -480,6 +559,7 @@ def ingest_delivery_crosscheck(wh, path, received_at, mode="backfill", published
                                   "detail": f"full bhav traded {r['traded_qty_reported']} vs bhavcopy {vol}"})
             mapped.append({**r, "isin": p["isin"], "source_instrument_id": p.get("source_instrument_id")})
         _enforce_quarantine_share(path, quarantined, len(rows), pol)
+        conflicts += _delivery_source_conflicts(wh, day, "delivery_crosscheck_observation", mapped, sha, received_at)
         meta = {"source_id": source_id, "source_format": fmt, "domain": "exchange_eod"}
         q_keys = {_source_key(q) for q in quarantined if q.get("isin")}
         new, tombstones, reissue, counts = _version(wh, "delivery_crosscheck_observation", day, mapped,
@@ -521,7 +601,7 @@ def ingest_security_master(wh, path, received_at, mode="backfill", published=Non
     infers the latter from the filename.  Callers may supply an exchange-notice/validated effective session;
     otherwise the snapshot remains useful evidence but fails closed for historical eligibility decisions.
     """
-    with wh.writer():
+    with wh.writer(), _parse_outcome(wh) as ctx:
         pol = policy or load_policy()
         sha, landed, raw = _land(wh, "nse_cm_security_master", path, received_at, source_url, retrieved_at,
                                  acquisition_method)
@@ -530,6 +610,7 @@ def ingest_security_master(wh, path, received_at, mode="backfill", published=Non
         except Exception as exc:
             _rejected_parse_event(wh, raw, exc)
             raise
+        ctx.update(raw=raw, fmt=fmt, day=master_date)
         if _already(wh, sha, master_date, "nse_cm_security_master"):
             return {"noop": True, "file_sha256": sha}
         if mode == "backfill":

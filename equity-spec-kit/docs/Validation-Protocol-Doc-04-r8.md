@@ -1,6 +1,6 @@
-# Validation Protocol — Document 04 r7
+# Validation Protocol — Document 04 r8
 
-*Release r5.9 · 25 September 2026 · governs how every backtest, shadow run and promotion is conducted*
+*Release r5.10 · 26 September 2026 · governs how every backtest, shadow run and promotion is conducted*
 
 ## 1. Purpose and what counts as evidence
 
@@ -49,7 +49,7 @@ Counts are in the README, never in prose.
 - `test_features.py` plants plausible misreadings of each feature's text.
 - `test_card_golden.py` edits the cards themselves. Examples: a 5% ROCE gate, a 4× ATR stop, `>=` turned into `>`, OR turned into AND, and a removed remainder clamp.
 
-A mutant that survives is a gap in the fixtures, and must be closed with a new case before any backtest counts. `mutation_check.py` then looks for gaps nobody planted. Mutation outcomes are explicit: `killed`, `survived`, `timeout`, `equivalent`, or `infrastructure_error`. A worker that exits unexpectedly, produces malformed output, fails to initialise, or otherwise loses the harness is an **infrastructure error**: it never improves the detected score and makes the campaign fail non-zero. A timeout attributable to the mutant remains a detected mutant outcome.
+A mutant that survives is a gap in the fixtures, and must be closed with a new case before any backtest counts. `mutation_check.py` then looks for gaps nobody planted. Mutation outcomes are explicit: `killed`, `survived`, `timeout`, `equivalent`, or `infrastructure_error`. A worker that exits unexpectedly, produces malformed output, fails to initialise, or otherwise loses the harness is an **infrastructure error**: it never improves the detected score and makes the campaign fail non-zero. So is a mutant that cannot be **built**. The operator swaps change only function bodies, so a build can fail only through a harness fault. r5.7–r5.9 counted build failures as kills, and because the harness dropped the module's `__file__`, all 84 `reference_engine.py` mutants were "killed" without running. The real first engine campaign (r5.10) left 22 survivors: 21 are now killed by new card and pipeline goldens, and one is a reviewed equivalent. `tests/test_mutation.py` reproduces the build fault and requires `infrastructure_error`, and checks that every mutant of every reference module builds. A timeout attributable to the mutant remains a detected mutant outcome.
 
 **Conformance.** M5, M6, M7 and M14 must expose equivalent functions and pass the same files unmodified. A production engine that disagrees with a reference on any case is wrong until proven otherwise, and the resolution is recorded in the issue log.
 
@@ -316,9 +316,10 @@ Consequences, stated so they cannot be traded away:
 - UDiFF source observations and the canonical strategy price must be reported separately; a non-canonical block-deal row cannot silently replace the regular-market bar.
 - Every historical session used for universe eligibility/no-trade inference must have a resolved MII master effective state. A master snapshot whose effective session is unresolved creates no eligibility/no-trade evidence.
 - `no_trade`, quarantine, missing source coverage and unresolved master state remain distinct in the run input and coverage report; zero-price or carried-forward synthetic trades are forbidden.
-- A complete-file withdrawal must resolve through a point-in-time tombstone, so exact-per-decision replays see the correction only after it became usable.
+- A withdrawal must resolve through a point-in-time tombstone, so exact-per-decision replays see the correction only after it became usable. A tombstone is written only for a same-format reissue of a source whose reissues are proven complete snapshots; until then an omission keeps the prior version and is logged (r5.10).
+- The same observation delivered in legacy and UDiFF format is one observation; a correction in either format is a later version, never back-dated (r5.10). Backfills spanning the 2024 format change must show zero `two canonical candidates` failures.
 - The same real-derived cases that motivated r5.8 (multi-series ISIN, ETF-vs-company classification, DVR, exchange dummy, metadata transition and eligible-but-absent state) must remain green.
-- Primary delivery evidence must come from a complete MTO source; full-bhav delivery is validation evidence and must never silently fill a missing MTO row. Reported delivery percentages are cross-checked against quantities, with mismatches recorded rather than overwritten.
+- Primary delivery evidence must come from a complete MTO source; full-bhav delivery is validation evidence and must never silently fill a missing MTO row. Reported delivery percentages are cross-checked against quantities, and MTO against full-bhav delivery quantities, with mismatches recorded rather than overwritten.
 - Historical runs must report source coverage from the explicit catalogue. A price-band file that is only `captured_unparsed` contributes **no** band evidence and its period remains excluded wherever band state is material.
 - Before `band_close_state` is used as backtest evidence, a later Stage-0 acceptance must validate the price-band source's date/effective-session semantics and tick rounding against real exchange files.
 

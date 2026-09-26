@@ -11,6 +11,26 @@ import os
 from dataclasses import dataclass
 
 
+# NSE's CM bhavcopy moved from the legacy layout (cmDDMONYYYYbhav.csv.zip under /content/historical/EQUITIES/) to
+# UDiFF. The first UDiFF-only session is taken as 8 July 2024. UNVERIFIED: it decides only which URL the downloader
+# tries first; ingestion accepts either format for any date, and the same content in both is one observation
+# (eos/m2/identity.py). Confirm it against the archive during Stage 0 and correct it here if needed.
+UDIFF_ONLY_FROM = dt.date(2024, 7, 8)
+UDIFF_ONLY_FROM_BASIS = "unverified"
+
+
+_MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+
+
+def _fields(day):
+    """Template fields. Month names come from a fixed table: strftime('%b') follows the process locale, and a
+    non-English Windows locale would produce URLs NSE does not serve (r5.10)."""
+    mon = _MONTHS[day.month - 1]
+    return dict(YYYY=f"{day.year:04d}", YYYYMMDD=f"{day.year:04d}{day.month:02d}{day.day:02d}",
+                DDMMYYYY=f"{day.day:02d}{day.month:02d}{day.year:04d}", DDMMYY=f"{day.day:02d}{day.month:02d}{day.year % 100:02d}",
+                MON=mon, ddMONyyyy=f"{day.day:02d}{mon}{day.year:04d}")
+
+
 @dataclass(frozen=True)
 class SourceSpec:
     source_id: str
@@ -18,18 +38,13 @@ class SourceSpec:
     url_template: str
     parsed: bool = True
     static_live_url: bool = False
+    content: str = "text"                  # what a genuine file is: 'zip', 'gzip' or 'text' (checked on download)
 
     def filename(self, day: dt.date) -> str:
-        return self.filename_template.format(
-            YYYY=day.strftime("%Y"), YYYYMMDD=day.strftime("%Y%m%d"), DDMMYYYY=day.strftime("%d%m%Y"),
-            DDMMYY=day.strftime("%d%m%y"), MON=day.strftime("%b").upper(), ddMONyyyy=day.strftime("%d%b%Y").upper(),
-        )
+        return self.filename_template.format(**_fields(day))
 
     def url(self, day: dt.date) -> str:
-        return self.url_template.format(
-            YYYY=day.strftime("%Y"), YYYYMMDD=day.strftime("%Y%m%d"), DDMMYYYY=day.strftime("%d%m%Y"),
-            DDMMYY=day.strftime("%d%m%y"), MON=day.strftime("%b").upper(), ddMONyyyy=day.strftime("%d%b%Y").upper(),
-        )
+        return self.url_template.format(**_fields(day))
 
 
 SOURCES = {
@@ -37,6 +52,7 @@ SOURCES = {
         "nse_cm_bhavcopy",
         "BhavCopy_NSE_CM_0_0_0_{YYYYMMDD}_F_0000.csv.zip",
         "https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{YYYYMMDD}_F_0000.csv.zip",
+        content="zip",
     ),
     "nse_cm_delivery": SourceSpec(
         "nse_cm_delivery",
@@ -47,14 +63,16 @@ SOURCES = {
         "nse_cm_security_master",
         "NSE_CM_security_{DDMMYYYY}.csv.gz",
         "https://nsearchives.nseindia.com/content/cm/NSE_CM_security_{DDMMYYYY}.csv.gz",
+        content="gzip",
     ),
     "nse_cm_full_bhav_delivery": SourceSpec(
         "nse_cm_full_bhav_delivery",
         "sec_bhavdata_full_{DDMMYYYY}.csv",
         "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{DDMMYYYY}.csv",
     ),
-    # NSE publishes the complete price-band list at a stable URL. The downloader *renames* each capture with
-    # its retrieval/trading date so different daily snapshots can never overwrite one another.
+    # NSE publishes the complete price-band list at a stable URL that always serves TODAY's list. The capture is
+    # named with its retrieval date in IST (the date it was captured, NOT a proven effective session), and the
+    # downloader refuses any other date (r5.10: r5.9 would label today's list with any past date it was given).
     "nse_cm_price_band": SourceSpec(
         "nse_cm_price_band",
         "sec_list_{DDMMYYYY}.csv",
@@ -65,19 +83,37 @@ SOURCES = {
 }
 
 
-def source_spec(source_id: str) -> SourceSpec:
+LEGACY_BHAVCOPY = SourceSpec(
+    "nse_cm_bhavcopy",
+    "cm{ddMONyyyy}bhav.csv.zip",
+    "https://nsearchives.nseindia.com/content/historical/EQUITIES/{YYYY}/{MON}/cm{ddMONyyyy}bhav.csv.zip",
+    content="zip",
+)
+
+
+def source_spec(source_id: str, day: dt.date = None, variant: str = None) -> SourceSpec:
+    """The spec for a source on a date. The bhavcopy has two layouts; `variant` ('legacy'/'udiff') overrides the
+    date rule, for dates where both were published."""
     try:
-        return SOURCES[source_id]
+        spec = SOURCES[source_id]
     except KeyError as e:
         raise KeyError(f"unknown source {source_id!r}; known: {', '.join(sorted(SOURCES))}") from e
+    if variant not in (None, "legacy", "udiff"):
+        raise ValueError(f"variant {variant!r}: expected 'legacy' or 'udiff'")
+    if source_id == "nse_cm_bhavcopy":
+        legacy = variant == "legacy" or (variant is None and day is not None and day < UDIFF_ONLY_FROM)
+        return LEGACY_BHAVCOPY if legacy else spec
+    if variant is not None:
+        raise ValueError(f"{source_id} has one layout; variant applies to nse_cm_bhavcopy only")
+    return spec
 
 
-def filename_for(source_id: str, day: dt.date) -> str:
-    return source_spec(source_id).filename(day)
+def filename_for(source_id: str, day: dt.date, variant: str = None) -> str:
+    return source_spec(source_id, day, variant).filename(day)
 
 
-def url_for(source_id: str, day: dt.date) -> str:
-    return source_spec(source_id).url(day)
+def url_for(source_id: str, day: dt.date, variant: str = None) -> str:
+    return source_spec(source_id, day, variant).url(day)
 
 
 def planned_downloads(days, source_ids=None):
@@ -106,6 +142,12 @@ def _parse_rows(wh, snapshot=None):
     return wh.read("raw_parse_event", keys, snapshot) if keys else []
 
 
+def _base_name(name):
+    """A downloaded reissue is saved as <stem>.reissue-<sha12><ext> (acquire.fetch); it covers the same date."""
+    import re
+    return re.sub(r"\.reissue-[0-9a-f]{12}(?=\.)", "", os.path.basename(name)).lower()
+
+
 def coverage_matrix(wh, days, source_ids=None, snapshot=None):
     """Return one deterministic row per requested (date, source).
 
@@ -130,10 +172,12 @@ def coverage_matrix(wh, days, source_ids=None, snapshot=None):
     out = []
     for day in days:
         for sid in source_ids:
-            spec = source_spec(sid)
+            spec = source_spec(sid, day)
             cov = cov_by.get((day, sid))
             expected = spec.filename(day)
-            receipts = [r for r in raw if r["source_id"] == sid and os.path.basename(r["original_name"]).lower() == expected.lower()]
+            names = {expected.lower()} | ({filename_for(sid, day, v).lower() for v in ("legacy", "udiff")}
+                                          if sid == "nse_cm_bhavcopy" else set())
+            receipts = [r for r in raw if r["source_id"] == sid and _base_name(r["original_name"]) in names]
             # If a manually saved capture kept a static source filename, match it only by the receipt's IST date is
             # deliberately NOT attempted here: that would silently turn receipt time into source effective date.
             if cov is not None:

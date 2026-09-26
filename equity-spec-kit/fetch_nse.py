@@ -9,7 +9,7 @@ import datetime as dt
 import json
 import sys
 
-from eos.m2.acquire import fetch
+from eos.m2.acquire import MIN_INTERVAL_SECONDS, AcquisitionError, fetch
 from eos.m2.catalog import SOURCES
 
 
@@ -18,8 +18,16 @@ def main(argv=None):
     ap.add_argument("source_id", choices=sorted(SOURCES))
     ap.add_argument("trade_date", type=dt.date.fromisoformat)
     ap.add_argument("destination")
+    ap.add_argument("--variant", choices=("legacy", "udiff"),
+                    help="bhavcopy layout to fetch; default by date (legacy before catalog.UDIFF_ONLY_FROM)")
+    ap.add_argument("--min-interval", type=float, default=MIN_INTERVAL_SECONDS,
+                    help="seconds between requests to NSE (default %(default)s)")
     ns = ap.parse_args(argv)
-    r = fetch(ns.source_id, ns.trade_date, ns.destination)
+    try:
+        r = fetch(ns.source_id, ns.trade_date, ns.destination, variant=ns.variant, min_interval=ns.min_interval)
+    except AcquisitionError as e:
+        print(f"refused: {e}", file=sys.stderr)
+        return 2
     print(json.dumps({
         "source_id": r.source_id,
         "trade_date": r.trade_date.isoformat(),
@@ -28,6 +36,7 @@ def main(argv=None):
         "retrieved_at": r.retrieved_at.isoformat(),
         "file_sha256": r.file_sha256,
         "size_bytes": r.size_bytes,
+        "reused_existing": r.reused_existing,
     }, indent=2))
     return 0
 

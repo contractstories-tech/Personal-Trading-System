@@ -97,11 +97,31 @@ def _load(module_name):
     return tree, src.splitlines(), _sites(tree)
 
 
+def mutant_namespace(mod):
+    """The globals a mutant is built in: the reference module's own, dunders included (r5.10).
+
+    r5.7-r5.9 dropped every ``__``-prefixed name, so ``reference_engine.py`` (which reads ``__file__`` at import)
+    raised NameError while being BUILT, and each of its 84 mutants was reported as killed without ever running."""
+    ns = dict(mod.__dict__)
+    if os.environ.get("EOS_MUTATION_BREAK_BUILD") == "1":      # self-test hook: reproduce the r5.7-r5.9 defect
+        ns = {k: v for k, v in ns.items() if not k.startswith("__")}
+    return ns
+
+
+def build_mutant(mod, tree, site):
+    m = types.ModuleType("mutant")
+    m.__dict__.update(mutant_namespace(mod))
+    exec(compile(_mutate(tree, site), mod.__file__, "exec"), m.__dict__)
+    return m
+
+
 def worker(module_name, start, stop):
     """Run mutants and report one explicit semantic outcome per mutant.
 
-    Exceptions caused by executing the mutant count as ``killed``. Failures before a mutant can be executed are
-    infrastructure failures and are intentionally left for the parent to diagnose from the non-zero worker exit.
+    Exceptions raised while a mutant RUNS against the goldens count as ``killed``. A mutant that cannot be BUILT is
+    an infrastructure failure, never a kill: the operator swaps here only change function bodies, so building can
+    fail only because the harness is broken. The worker then exits with code 3 and the parent reports
+    ``infrastructure_error`` with the reason (r5.10).
     """
     detect = _detectors()[module_name]
     mod = __import__(module_name)
@@ -110,13 +130,12 @@ def worker(module_name, start, stop):
     for i in range(start, stop):
         if os.environ.get("EOS_MUTATION_SELF_KILL") == "1":
             os._exit(7)
-        m = types.ModuleType("mutant")
-        m.__dict__.update({k: v for k, v in mod.__dict__.items() if not k.startswith("__")})
         try:
-            exec(compile(_mutate(tree, sites[i]), "mutant", "exec"), m.__dict__)
-        except Exception:
-            print(f"{TAG} {i} killed", flush=True)
-            continue
+            m = build_mutant(mod, tree, sites[i])
+        except Exception as exc:
+            sys.stderr.write(f"mutant {i} of {module_name} could not be built: {type(exc).__name__}: {exc}\n")
+            sys.stderr.flush()
+            os._exit(3)
         for k in originals:
             if hasattr(m, k):
                 setattr(mod, k, getattr(m, k))

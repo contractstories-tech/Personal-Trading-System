@@ -1,41 +1,52 @@
-# START HERE — r5.9 handover
+# START HERE — r5.10 handover
 
-*25 September 2026 · non-normative status note; the manifest-bound specifications, registry, cards and schemas control on any conflict*
+*26 September 2026 · non-normative status note; the manifest-bound specifications, registry, cards and schemas control on any conflict*
 
 ## Status
 
-- **r5.7 is the last native-Windows/Parquet certified baseline.** A clean Windows 11 / Python 3.12.10 environment installing only declared dependencies ended `ALL PASSED`.
-- **r5.8 is the completed price/security-reference correction milestone.** It preserves NSE source identity, valid multi-series observations, versioned MII master state, canonical strategy prices, no-trade states and withdrawal tombstones. It has not yet received the user's native-Windows/Parquet/real-file acceptance.
-- **r5.9 is the market-data completion build.** It starts from r5.8 without changing r5.8 in place and adds the next known Stage-0 components that can be implemented without guessing unresolved exchange semantics.
+- **r5.7 is the last native-Windows/Parquet-certified baseline.** A clean Windows 11 / Python 3.12.10 environment, installing only the declared dependencies, ended `ALL PASSED`.
+- **r5.8** corrected real NSE price and security-reference semantics. **r5.9** added delivery evidence, a source catalogue, a downloader, coverage reporting and price-band capture. Neither has had its native-Windows run.
+- **r5.10 is an integrity release over r5.9.** It fixes every finding from the reviews of r5.7, r5.8 and r5.9 (Issue Log §17), none of which had reached the Issue Log before. From a clean unzip it passes every contract command, with Parquet, on Linux under CPython 3.11, 3.12 and 3.13.
 
-## What r5.9 adds
+## What r5.10 fixes
 
-1. **Primary MTO delivery hardening.** The parser validates the type-10 trade date and declared row count, preserves NSE's reported delivery percentage and cross-checks it arithmetically against traded/deliverable quantities. Mismatches are evidence conflicts, not silently corrected source values.
-2. **Independent full-bhav delivery evidence.** `sec_bhavdata_full_DDMMYYYY.csv` is parsed into `delivery_crosscheck_observation`. Missing delivery shown by NSE as `-` remains unavailable, never zero. This source may validate the MTO feed but can never populate or overwrite the primary delivery table.
-3. **More MII evidence, not more assumptions.** Raw `PricRg`, `PricRgTp`, `MaxPric`, `MinPric` and `TickSz` fields are retained. They are evidence only until historical effective-date and tick-rounding semantics are proven.
-4. **Explicit NSE source catalogue and acquisition helper.** `eos/m2/catalog.py`, `eos/m2/acquire.py` and `fetch_nse.py` know the small allowlisted Stage-0 source set and download bytes without bypassing ingestion/provenance controls.
-5. **Coverage reporting.** `coverage_report.py` reports parsed, rejected, receipt-only, captured-unparsed and missing source states date by date.
-6. **Prospective price-band capture.** The official price-band list can be landed immutably with source URL/retrieval metadata now. It is deliberately `captured_unparsed`: receipt alone creates no `source_coverage`, no historical band assignment and no `band_close_state`.
+1. **No correction is back-dated across file formats.** An observation is (ISIN, series, date) in legacy and UDiFF alike, and `FinInstrmId` is kept as an attribute. In r5.8–r5.9, a correction arriving in the other format became a "first version" usable on the trade date: look-ahead, followed by a failed canonical read.
+2. **Withdrawals need proof.** A row missing from a later file is tombstoned only when the source policy says reissues are complete snapshots (`reissue_semantics`, now `unverified` everywhere) and the file is in the same format. Otherwise the row is kept and the omission logged.
+3. **Every landed file has a recorded outcome**, including files that parse but fail a quality check.
+4. **MTO and full-bhav delivery are actually compared**, logging mismatches without changing either value.
+5. **The downloader:**
+   - refuses HTML block pages, wrong file formats, off-NSE hosts (including redirects) and back-dated live captures;
+   - paces its requests and never overwrites an earlier download;
+   - knows the pre-July-2024 bhavcopy URL layout.
+6. **The coverage report** counts weekdays and never creates a warehouse from a mistyped path.
+7. **The mutation check really tests the engine.** Since r5.7 no engine mutant had ever run: a mutant that failed to *build* was counted as killed. The 22 real survivors are now closed (21 by new goldens, 1 reviewed equivalent), and a failure to build is an infrastructure error.
+8. **Gate-only capacity** breaks equal signal times on market cap, then ISIN. The model never reserves more cash than its maximum position.
 
-## What r5.9 deliberately does not guess
+## What r5.10 still does not guess
 
-- There is still no universal MII `master_file_date -> effective_session` formula. Unresolved master timing remains fail-closed.
-- BE/BZ/right-entitlement semantics are not broadened by assumption.
-- The price-band file does not yet drive execution. Actual historical files must establish its layout/date semantics and the exact exchange tick-rounding rule before that is allowed.
-- Downloader success against the live NSE website is an external acceptance item because exchange anti-bot/session behaviour can change independently of this package.
+- Whether NSE reissues are complete snapshots (no tombstones until a real reissue shows it).
+- The exact date the bhavcopy became UDiFF-only: 8 July 2024 is assumed, and it only chooses which URL to try.
+- The MTO header's declared-count field on a real file (a wrong assumption fails loudly).
+- The MII effective-session convention, and the price-band layout, date semantics and tick rounding.
 
-## External acceptance still required
+## Your acceptance steps
 
-When Harsh next has access to the Windows warehouse machine:
+On the Windows warehouse machine:
 
 ```text
-fresh Python 3.12 virtual environment outside the package
-install only requirements-dev.txt
-python run_all.py --require-parquet
+unzip equity-spec-kit-r5.10.zip into a clean folder; keep the virtual environment OUTSIDE it
+py -3.12 -m venv C:\EquitySystem\venv510
+C:\EquitySystem\venv510\Scripts\python -m pip install -r requirements-dev.txt
+C:\EquitySystem\venv510\Scripts\python run_all.py --require-parquet
 ```
 
-Then ingest genuine NSE files for a small representative date set: UDiFF, MII security master, MTO and full-bhav delivery; capture the price-band file byte-exact. r5.9 should preserve the r5.8 3,637-observation real-data behavior, parse MTO without synthetic assumptions, keep the full-bhav file validation-only, and report the coverage state explicitly.
+It must end `ALL PASSED`; if it doesn't, send `run_all.log`. Then re-ingest the untouched 24-Sep UDiFF and MII files, plus MTO, full-bhav and price-band files for a few dates, and run `coverage_report.py`:
+- all 3,637 bhavcopy observations should survive;
+- ingesting a date in the other format should report every row unchanged;
+- MTO/full-bhav mismatches, if any, appear as conflicts.
 
-## Roadmap after r5.9 acceptance
+Try `fetch_nse.py` for one file of each source; live NSE behaviour can only be tested there.
 
-Validate multi-date master timing and price-band semantics; measure archive depth and publication times; then continue Stage 0 with permanent security lineage/corporate actions, XBRL/fundamental history and remaining surveillance/F&O/share-count inputs before treating multi-year calibration/backtesting as serious strategy evidence.
+## Roadmap after acceptance
+
+Settle the open items in Issue Log §17's register (reissue semantics, the format cut-over date, the MTO count, MII timing, price bands). Measure archive depth and publication times. Then continue Stage 0 with security lineage and corporate actions, XBRL fundamentals, and the surveillance, F&O and share-count inputs, before any multi-year calibration or backtest counts as evidence.

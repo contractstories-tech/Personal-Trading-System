@@ -12,6 +12,7 @@ And once per platform path (r5.6): on Windows the real Windows primitives; on a 
 primitives and the Windows code paths against emulated kernel32 / msvcrt (eos/fsio.py). The emulation catches a
 Windows-only call on the wrong path (r5.5's directory fsync); it does not replace running this suite on Windows.
 """
+import copy
 import datetime as dt
 import decimal
 import json
@@ -270,17 +271,44 @@ def same_file_twice_is_a_noop():
 
 
 @case
-def cross_format_reissue_preserves_source_identity_explicitly():
+def cross_format_same_content_is_one_observation():
+    """r5.10 restores r5.3's rule: the same content in the other format writes no new version. r5.8-r5.9 gave the
+    UDiFF row a new identity (FinInstrmId), wrote three 'new' rows and tombstoned the legacy ones."""
     with Env() as e:
         ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("a.csv"), D1), recv(D1))
         res = ingest.ingest_bhavcopy(e.wh, F.udiff(e.f("b.csv"), D1), recv(D2))
-        # UDiFF introduces exchange source IDs the legacy file did not carry.  Treat it as a new complete
-        # source snapshot and withdraw the legacy identities rather than pretending the identities are equal.
-        assert res["rows_new"] == 3 and res["rows_changed"] == 0
-        assert len(e.wh.read("observation_tombstone", [D1.isoformat()])) == 3
-        got = resolve.source_prices_known_as_of(e.wh, D3, start=D1)
-        assert len([r for r in got if r["trade_date"] == D1]) == 3
-        assert {r["source_instrument_id"] for r in got if r["trade_date"] == D1} == {"1000", "1001", "1002"}
+        assert res["rows_new"] == 0 and res["rows_changed"] == 0 and res["rows_unchanged"] == 3
+        assert e.wh.partitions("observation_tombstone") == []
+        assert len([r for r in resolve.history_known_as_of(e.wh, D3) if r["trade_date"] == D1]) == 3
+
+
+@case
+def correction_in_the_other_format_is_never_back_dated():
+    """r5.10 (review of r5.8/r5.9): a correction delivered as UDiFF after a legacy original is version 2, available
+    when received. r5.8-r5.9 stored it as a 'first version' inferred usable at 22:30 on the trade date, so a decision
+    on the trade date saw a price received days later and the canonical read failed with two candidates."""
+    with Env() as e:
+        ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("a.csv"), D1), recv(D1))
+        late = at_ist(D3 + dt.timedelta(days=4), "10:00")
+        res = ingest.ingest_bhavcopy(e.wh, F.udiff(e.f("b.csv"), D1, F.bars(D1, bump={A: 150})), late)
+        assert res["rows_changed"] == 1 and res["rows_new"] == 0
+        a = sorted((r["version_no"], r["availability_inferred"], r["usable_from"], r.get("source_instrument_id"))
+                   for r in e.wh.read("price_observation", [D1.isoformat()]) if r["isin"] == A)
+        assert [(v, inf) for v, inf, _, _ in a] == [(1, True), (2, False)] and a[1][2] == late and a[1][3] is not None
+        close_on = lambda day: [x["close"] for x in resolve.history_known_as_of(e.wh, day)  # noqa: E731
+                                if x["isin"] == A and x["trade_date"] == D1]
+        assert close_on(D1) == [decimal.Decimal("119")]                  # the trade-date decision saw only the original
+        assert close_on(late.astimezone(IST).date()) == [decimal.Decimal("150")]
+
+
+@case
+def same_isin_and_series_under_two_fininstrmids_is_a_duplicate():
+    """One observation per (ISIN, series) per session: two FinInstrmIds claiming it are ambiguous and quarantined."""
+    with Env() as e:
+        rows = F.bars(D1)
+        bad = [dict(rows[0], sid=7000), dict(rows[0], sid=7001)] + [dict(r, sid=7100 + n) for n, r in enumerate(rows[1:])]
+        raises(ingest.QualityError, ingest.ingest_bhavcopy, e.wh, F.udiff(e.f("u.csv"), D1, bad), recv(D1))
+        assert e.wh.partitions("price_observation") == []
 
 
 @case
@@ -301,19 +329,68 @@ def correction_is_a_new_version_resolved_as_of():
         assert close_on(D3) == decimal.Decimal("120")
 
 
+def _policy(**per_source):
+    pol = copy.deepcopy(source_policy.load())
+    for sid, fields in per_source.items():
+        pol["sources"][sid].update(fields)
+    return pol
+
+
 @case
-def reissue_missing_a_security_creates_point_in_time_tombstone():
+def reissue_missing_a_security_keeps_prior_while_reissue_semantics_are_unverified():
+    """r5.10: no real NSE reissue has yet shown that a reissue is a complete snapshot, so an omission is logged and
+    the prior version kept (r5.8-r5.9 tombstoned it)."""
     with Env() as e:
         load_days(e, [D1], deliver=False)
         rows = F.bars(D1)
         rows[0]["c"] = "118.00"
         res = ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("r.csv"), D1, rows[:2]), recv(D2))
-        assert [c["isin"] for c in res["conflicts"]] == [C]
+        assert [(c["isin"], c["kind"]) for c in res["conflicts"]] == [(C, "absent_in_reissue")]
+        assert "unverified" in res["conflicts"][0]["detail"]
+        assert e.wh.partitions("observation_tombstone") == []
+        assert C in {x["isin"] for x in resolve.history_known_as_of(e.wh, D3)}
+
+
+@case
+def reissue_missing_a_security_creates_point_in_time_tombstone_when_complete():
+    """With reissue_semantics: complete_snapshot, a same-format omission is a point-in-time withdrawal."""
+    with Env() as e:
+        pol = _policy(nse_cm_bhavcopy={"reissue_semantics": "complete_snapshot"})
+        ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("b.csv"), D1), recv(D1), policy=pol)
+        rows = F.bars(D1)
+        rows[0]["c"] = "118.00"
+        res = ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("r.csv"), D1, rows[:2]), recv(D2), policy=pol)
+        assert [(c["isin"], c["kind"]) for c in res["conflicts"]] == [(C, "withdrawn_in_reissue")]
         assert C in {x["isin"] for x in resolve.history_known_as_of(e.wh, D1)}  # before withdrawal was known
         assert C not in {x["isin"] for x in resolve.history_known_as_of(e.wh, D3)}
         tomb = e.wh.read("observation_tombstone", [D1.isoformat()])
         assert len(tomb) == 1 and tomb[0]["isin"] == C and tomb[0]["reason"] == "absent_from_complete_reissue"
-        assert len(e.wh.read("data_conflict")) == 1
+
+
+@case
+def delivery_never_maps_onto_a_withdrawn_price_row():
+    """r5.10: delivery rows join only ACTIVE price observations; r5.9 also joined tombstoned ones."""
+    with Env() as e:
+        pol = _policy(nse_cm_bhavcopy={"reissue_semantics": "complete_snapshot"}, nse_cm_delivery={})
+        pol["quality"]["max_quarantine_share"] = 0.4
+        ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("b.csv"), D1), recv(D1), policy=pol)
+        ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("r.csv"), D1, F.bars(D1)[:2]), recv(D1, "09:00"), policy=pol)
+        res = ingest.ingest_delivery(e.wh, F.mto(e.f("MTO_16092026.DAT"), D1), recv(D1, "10:00"), policy=pol)
+        assert [(q["symbol"], q["reason"]) for q in res["quarantined"]] == [(F.SEC[2][0], "unmapped_symbol")]
+        assert C not in {r["isin"] for r in e.wh.read("delivery_observation") if not canary.is_canary(r["isin"])}
+
+
+@case
+def an_omission_in_the_other_format_is_never_a_withdrawal():
+    """Even with complete_snapshot semantics, a row absent from a file of the OTHER format is kept: the two formats'
+    row sets differ, so absence there proves nothing."""
+    with Env() as e:
+        pol = _policy(nse_cm_bhavcopy={"reissue_semantics": "complete_snapshot"})
+        ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("b.csv"), D1), recv(D1), policy=pol)
+        res = ingest.ingest_bhavcopy(e.wh, F.udiff(e.f("u.csv"), D1, F.bars(D1)[:2]), recv(D2), policy=pol)
+        assert [(c["isin"], c["kind"]) for c in res["conflicts"]] == [(C, "absent_in_reissue")]
+        assert "nse_bhavcopy_legacy" in res["conflicts"][0]["detail"]
+        assert e.wh.partitions("observation_tombstone") == []
 
 
 # ------------------------------------------------------------------ quality checks: parsed warehouse state is unchanged on reject
@@ -1160,6 +1237,43 @@ def full_bhav_delivery_is_independent_crosscheck_and_preserves_missing_delivery(
         assert got[A]["delivery_available"] is True and got[A]["delivery_qty"] == 5000
         assert got[B]["delivery_available"] is False and got[B]["delivery_qty"] is None
         assert not e.wh.partitions("delivery_observation")  # validation reference can never become the primary feed
+
+
+@case
+def mto_and_full_bhav_delivery_are_compared_in_either_order():
+    """r5.10: r5.9 described full-bhav delivery as a cross-check of MTO but never compared the two. Whichever file
+    arrives second now logs each difference; neither value is ever changed."""
+    for order in ("mto_first", "full_bhav_first"):
+        with Env() as e:
+            ingest.ingest_bhavcopy(e.wh, F.legacy(e.f("b.csv"), D1), recv(D1))
+            vol_c = next(r["vol"] for r in F.bars(D1) if r["isin"] == C)
+            mto = lambda: ingest.ingest_delivery(e.wh, F.mto(e.f("MTO_16092026.DAT"), D1, deliv={C: vol_c // 2 + 7}),  # noqa: E731
+                                                 recv(D1, "09:00"))
+            fb = lambda: ingest.ingest_delivery_crosscheck(e.wh, F.full_bhav_delivery(  # noqa: E731
+                e.f("sec_bhavdata_full_16092026.csv"), D1, missing_isins={B}), recv(D1, "09:30"))
+            first, second = (mto, fb) if order == "mto_first" else (fb, mto)
+            assert not [c for c in first()["conflicts"] if c["kind"].startswith("delivery_") and "mismatch" in c["kind"]
+                        and c["kind"] != "delivery_pct_mismatch"]
+            got = sorted((c["isin"], c["kind"]) for c in second()["conflicts"]
+                         if c["kind"] in ("delivery_source_mismatch", "delivery_availability_mismatch"))
+            assert got == [(B, "delivery_availability_mismatch"), (C, "delivery_source_mismatch")], (order, got)
+            primary = {r["isin"]: r["delivery_qty"] for r in e.wh.read("delivery_observation")}
+            assert primary[C] == vol_c // 2 + 7 and primary[B] is not None    # MTO stays primary, uncorrected
+
+
+@case
+def a_file_rejected_after_parsing_records_its_outcome():
+    """r5.10: a file that parses but fails a quality check gets a `rejected` parse event with its format and date;
+    r5.7-r5.9 left only the receipt, which looks the same as a crash between receipt and parse."""
+    with Env() as e:
+        raises(ingest.QualityError, ingest.ingest_bhavcopy, e.wh, F.legacy(e.f("b.csv"), D1), at_ist(D1, "23:30"))
+        (ev,) = e.wh.read("raw_parse_event")
+        assert ev["status"] == "rejected" and ev["trade_date"] == D1 and ev["source_format"] == "nse_bhavcopy_legacy"
+        assert "fewer than" in ev["parse_error"] and len(e.wh.read("raw_file")) == 1
+        load_days(e, [D1], deliver=False)
+        raises(ingest.KillSwitch, ingest.ingest_bhavcopy, e.wh, F.legacy(e.f("k.csv"), D2, F.bars(D2)[:1]), recv(D2))
+        kinds = sorted((r["status"], r["trade_date"]) for r in e.wh.read("raw_parse_event"))
+        assert ("rejected", D2) in kinds
 
 
 @case

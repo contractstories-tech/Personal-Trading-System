@@ -12,7 +12,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SKIP = {"MANIFEST.json", "__pycache__", ".pytest_cache", "run_all.log"}   # run_all.log: a local test log
 # The one place the release is set. --verify checks MANIFEST.json and README.md agree with it
 # (r5.2 shipped labelled "r5.1" because this string was hardcoded and never verified).
-RELEASE = "r5.9"
+RELEASE = "r5.10"
 TEST_COMMAND = "python run_all.py   (every contract command, with this interpreter, on any OS)"
 
 

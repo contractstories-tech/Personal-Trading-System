@@ -18,9 +18,7 @@ SERIES_PRIORITY = {"EQ": 0, "BE": 10, "BZ": 11, "SM": 20, "ST": 21, "SZ": 22}
 NON_CANONICAL_SERIES = {"BL", "IQ", "RL"}
 
 
-def _source_key(r):
-    sid = r.get("source_instrument_id")
-    return ("src", str(sid)) if sid not in (None, "") else ("legacy", r.get("isin"), r.get("series"))
+from .identity import observation_key as _source_key   # (ISIN, series) in every format (r5.10)
 
 
 def _event_key(r):
